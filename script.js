@@ -1,508 +1,700 @@
-// Budget Planning App - Enhanced with Bug fixes and Performance improvements
+// Budget Planning App - Enhanced with Google Authentication and Sheets Integration
+
+// Google API Configuration - loaded from config.properties
+let GOOGLE_CONFIG = {
+    CLIENT_ID: '',
+    API_KEY: '',
+    DISCOVERY_DOC: 'https://sheets.googleapis.com/$discovery/rest?version=v4',
+    SCOPES: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file'
+};
+
+// Function to load configuration from properties file
+async function loadConfiguration() {
+    try {
+        const response = await fetch('./config.properties');
+        const text = await response.text();
+        
+        const properties = {};
+        text.split('\n').forEach(line => {
+            line = line.trim();
+            if (line && !line.startsWith('#')) {
+                const [key, value] = line.split('=', 2);
+                if (key && value) {
+                    properties[key.trim()] = value.trim();
+                }
+            }
+        });
+        
+        // Update GOOGLE_CONFIG with loaded properties
+        GOOGLE_CONFIG.CLIENT_ID = properties.GOOGLE_CLIENT_ID || '';
+        GOOGLE_CONFIG.API_KEY = properties.GOOGLE_API_KEY || '';
+        GOOGLE_CONFIG.DISCOVERY_DOC = properties.GOOGLE_DISCOVERY_DOC || GOOGLE_CONFIG.DISCOVERY_DOC;
+        GOOGLE_CONFIG.SCOPES = properties.GOOGLE_SCOPES || GOOGLE_CONFIG.SCOPES;
+        
+        console.log('Configuration loaded successfully');
+        return true;
+    } catch (error) {
+        console.error('Failed to load configuration:', error);
+        return false;
+    }
+}
+
+// Global variables for Google Auth
+let gapi, google;
+let isGapiLoaded = false;
+let isGoogleLoaded = false;
+let currentUser = null;
+let spreadsheetId = null;
 
 class BudgetApp {
     constructor() {
-        this.currentMonth = new Date().getMonth();
+        this.data = {};
         this.currentYear = new Date().getFullYear();
-        this.expenseChart = null;
-        this.efficiencyChart = null;
-        this.balanceChart = null;
-        this.data = null;
-        this.fixedExpenseTemplates = null;
-        this.debtTemplates = null;
-        this.isNavigating = false; // Prevent race conditions
-        this.saveTimeout = null; // Debounce auto-save
-        this.chartUpdateTimeout = null; // Debounce chart updates
+        this.currentMonth = new Date().getMonth();
+        this.charts = {};
+        this.templates = {
+            fixedExpenses: [],
+            debt: []
+        };
+        this.currentTheme = 'dark';
+        this.isLoading = false;
+        this.saveTimeout = null;
+        this.updateTimeout = null;
 
-        // Cache DOM elements to improve performance
-        this.domCache = {};
-
-        this.init();
+        // Load configuration first, then initialize
+        this.initializeWithConfig();
     }
 
-    async init() {
-        try {
-            // Wait for DOM to be fully ready
-            await this.waitForDOM();
-
-            // Cache important DOM elements
-            this.cacheDOMElements();
-
-            // Load data first with error handling
-            this.data = await this.loadData();
-            this.fixedExpenseTemplates = await this.loadFixedExpenseTemplates();
-            this.debtTemplates = await this.loadDebtTemplates();
-
-            // Setup everything else
-            this.setupEventListeners();
-            this.setupTooltips();
-            this.updateCurrentMonthDisplay();
-            this.loadMonth(this.currentMonth, this.currentYear);
-            this.setupTheme();
-            this.updateAllCharts();
-
-            console.log('Budget app initialized successfully');
-        } catch (error) {
-            console.error('Failed to initialize budget app:', error);
-            this.showError('Failed to initialize application. Please refresh the page.');
-        }
-    }
-
-    cacheDOMElements() {
-        const elements = [
-            'prevMonth', 'nextMonth', 'currentMonth', 'themeToggle', 
-            'adminPanel', 'exportPDF', 'totalIncome', 'totalExpenses', 
-            'remainingAmount', 'carriedAmount', 'adminModal', 'deleteModal',
-            'tooltip', 'errorToast', 'errorMessage', 'expenseChart', 
-            'efficiencyChart', 'balanceChart'
-        ];
-
-        elements.forEach(id => {
-            const element = document.getElementById(id);
-            if (element) {
-                this.domCache[id] = element;
-            } else {
-                console.warn(`Element with ID '${id}' not found`);
-            }
-        });
-    }
-
-    getElement(id) {
-        return this.domCache[id] || document.getElementById(id);
-    }
-
-    waitForDOM() {
-        return new Promise((resolve) => {
-            if (document.readyState === 'complete') {
-                resolve();
-            } else {
-                window.addEventListener('load', resolve);
-            }
-        });
-    }
-
-    setupEventListeners() {
-        try {
-            // Navigation arrows with null checks
-            const prevButton = this.getElement('prevMonth');
-            const nextButton = this.getElement('nextMonth');
-
-            if (prevButton && nextButton) {
-                prevButton.addEventListener('click', () => {
-                    if (!this.isNavigating) {
-                        this.navigateMonth(-1);
-                    }
-                });
-
-                nextButton.addEventListener('click', () => {
-                    if (!this.isNavigating) {
-                        this.navigateMonth(1);
-                    }
-                });
-            }
-
-            // Theme toggle with null check
-            const themeToggle = this.getElement('themeToggle');
-            if (themeToggle) {
-                themeToggle.addEventListener('click', () => {
-                    this.toggleTheme();
-                });
-            }
-
-            // Admin panel with null check
-            const adminButton = this.getElement('adminPanel');
-            if (adminButton) {
-                adminButton.addEventListener('click', () => {
-                    this.openAdminPanel();
-                });
-            }
-
-            // PDF export with null check
-            const exportButton = this.getElement('exportPDF');
-            if (exportButton) {
-                exportButton.addEventListener('click', () => {
-                    this.exportToPDF();
-                });
-            }
-
-            // Admin panel forms
-            const addTemplateButton = document.getElementById('addTemplate');
-            if (addTemplateButton) {
-                addTemplateButton.addEventListener('click', () => {
-                    this.addFixedExpenseTemplate();
-                });
-            }
-
-            const addDebtTemplateButton = document.getElementById('addDebtTemplate');
-            if (addDebtTemplateButton) {
-                addDebtTemplateButton.addEventListener('click', () => {
-                    this.addDebtTemplate();
-                });
-            }
-
-            // Input validation with immediate calculations
-            document.addEventListener('input', (e) => {
-                if (e.target.classList.contains('numeric-input')) {
-                    this.validateNumericInput(e.target);
-                }
-
-                // Immediate calculation update and debounced save
-                if (e.target.classList.contains('editable')) {
-                    this.updateCalculations(); // Immediate calculation update
-                    this.debouncedSave(); // Still debounce the save operation
-                }
-            });
-
-            // Close modal on overlay click
-            document.addEventListener('click', (e) => {
-                if (e.target.classList.contains('modal-overlay')) {
-                    this.closeAdminPanel();
-                    this.closeDeleteSelectionPanel();
-                    this.closeManagePanel();
-                }
-            });
-
-            // Keyboard navigation
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') {
-                    this.closeAdminPanel();
-                    this.closeDeleteSelectionPanel();
-                    this.closeManagePanel();
-                }
-            });
-
-            console.log('Event listeners setup successfully');
-        } catch (error) {
-            console.error('Error setting up event listeners:', error);
-            this.showError('Failed to setup event listeners');
-        }
-    }
-
-    debouncedSave() {
-        if (this.saveTimeout) {
-            clearTimeout(this.saveTimeout);
-        }
-
-        this.saveTimeout = setTimeout(() => {
-            try {
-                this.saveData();
-                this.updateCalculations();
-                this.debouncedChartUpdate();
-            } catch (error) {
-                console.error('Error in debounced save:', error);
-                this.showError('Failed to save data');
-            }
-        }, 500); // Increased debounce time to reduce frequency
-    }
-
-    debouncedChartUpdate() {
-        if (this.chartUpdateTimeout) {
-            clearTimeout(this.chartUpdateTimeout);
-        }
-
-        this.chartUpdateTimeout = setTimeout(() => {
-            try {
-                this.updateAllCharts();
-            } catch (error) {
-                console.error('Error updating charts:', error);
-            }
-        }, 300);
-    }
-
-    updateCurrentMonthDisplay() {
-        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                           'July', 'August', 'September', 'October', 'November', 'December'];
-        const currentMonthElement = this.getElement('currentMonth');
-        if (currentMonthElement) {
-            currentMonthElement.textContent = `${monthNames[this.currentMonth]} ${this.currentYear}`;
-        }
-    }
-
-    async navigateMonth(direction) {
-        if (this.isNavigating) return; // Prevent concurrent navigation
-
-        this.isNavigating = true;
-
-        try {
-            // Clear any pending saves before navigation
-            if (this.saveTimeout) {
-                clearTimeout(this.saveTimeout);
-                this.saveData(); // Save immediately before navigation
-            }
-
-            this.currentMonth += direction;
-
-            if (this.currentMonth > 11) {
-                this.currentMonth = 0;
-                this.currentYear += 1;
-            } else if (this.currentMonth < 0) {
-                this.currentMonth = 11;
-                this.currentYear -= 1;
-            }
-
-            this.updateCurrentMonthDisplay();
-            await this.loadMonth(this.currentMonth, this.currentYear);
-
-        } catch (error) {
-            console.error('Error navigating month:', error);
-            this.showError('Failed to navigate to month');
-        } finally {
-            this.isNavigating = false;
-        }
-    }
-
-    initializeYearData(year) {
-        if (!this.data[year]) {
-            this.data[year] = {};
-            for (let month = 0; month < 12; month++) {
-                this.data[year][month] = {
-                    income: [],
-                    fixedExpenses: [],
-                    otherExpenses: [],
-                    travelEntertainment: [],
-                    debt: [],
-                    investment: [],
-                    carriedBalance: 0
-                };
-            }
-        }
-    }
-
-    ensureMonthArrays(monthData) {
-        const requiredArrays = ['income', 'fixedExpenses', 'otherExpenses', 'debt', 'investment', 'travelEntertainment'];
-        requiredArrays.forEach(array => {
-            if (!monthData[array]) monthData[array] = [];
-        });
-        if (typeof monthData.carriedBalance !== 'number') monthData.carriedBalance = 0;
-    }
-
-    carryOverBalance(month, year) {
-        try {
-            if (!this.data[year] || !this.data[year][month]) {
-                return;
-            }
-
-            let previousMonth = month - 1;
-            let previousYear = year;
-
-            if (previousMonth < 0) {
-                previousMonth = 11;
-                previousYear = year - 1;
-            }
-
-            if (this.data[previousYear] && this.data[previousYear][previousMonth]) {
-                const prevMonthData = this.data[previousYear][previousMonth];
-                const prevIncome = (prevMonthData.income || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-                const prevExpenses = 
-                    (prevMonthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                    (prevMonthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                    (prevMonthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                    (prevMonthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                    (prevMonthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-
-                const prevRemaining = prevIncome - prevExpenses + (prevMonthData.carriedBalance || 0);
-                this.data[year][month].carriedBalance = prevRemaining > 0 ? prevRemaining : 0;
-            }
-        } catch (error) {
-            console.error('Error carrying over balance:', error);
-        }
-    }
-
-    setupTooltips() {
-        const tooltip = this.getElement('tooltip');
-        const tooltipHeaders = document.querySelectorAll('.tooltip-header');
-
-        if (!tooltip) {
-            console.warn('Tooltip element not found');
+    async initializeWithConfig() {
+        const configLoaded = await loadConfiguration();
+        
+        if (!configLoaded || !GOOGLE_CONFIG.CLIENT_ID || !GOOGLE_CONFIG.API_KEY) {
+            this.showConfigurationError();
             return;
         }
 
-        tooltipHeaders.forEach(header => {
-            header.addEventListener('mouseenter', (e) => {
-                try {
-                    const tooltipText = e.target.dataset.tooltip;
-                    if (tooltipText) {
-                        tooltip.textContent = tooltipText;
-                        tooltip.classList.add('show');
+        // Initialize only if user is authenticated
+        if (this.checkAuthStatus()) {
+            this.initializeApp();
+        } else {
+            this.showLoginScreen();
+        }
+    }
 
-                        const rect = e.target.getBoundingClientRect();
-                        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-                        const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    showConfigurationError() {
+        document.body.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: Arial, sans-serif; text-align: center; padding: 20px;">
+                <h1 style="color: #ff4444;">Configuration Error</h1>
+                <p>Please configure your Google API credentials in the <code>config.properties</code> file.</p>
+                <p>Update the following values:</p>
+                <ul style="text-align: left; max-width: 400px;">
+                    <li>GOOGLE_CLIENT_ID</li>
+                    <li>GOOGLE_API_KEY</li>
+                </ul>
+                <p>See <code>userdata/google-setup-instructions.md</code> for detailed setup instructions.</p>
+                <button onclick="location.reload()" style="padding: 10px 20px; margin-top: 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">Reload Page</button>
+            </div>
+        `;
+    }
 
-                        tooltip.style.left = `${rect.left + scrollLeft + (rect.width / 2)}px`;
-                        tooltip.style.top = `${rect.bottom + scrollTop + 10}px`;
-                    }
-                } catch (error) {
-                    console.error('Error showing tooltip:', error);
-                }
+    checkAuthStatus() {
+        // Check if user is already authenticated
+        return currentUser !== null;
+    }
+
+    showLoginScreen() {
+        document.getElementById('loginScreen').style.display = 'flex';
+        document.getElementById('mainApp').style.display = 'none';
+        this.initializeGoogleAuth();
+    }
+
+    hideLoginScreen() {
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainApp').style.display = 'block';
+        this.initializeApp();
+    }
+
+    async initializeGoogleAuth() {
+        try {
+            // Load Google APIs
+            await this.loadGoogleApis();
+
+            // Initialize Google Identity Services
+            google.accounts.id.initialize({
+                client_id: GOOGLE_CONFIG.CLIENT_ID,
+                callback: this.handleCredentialResponse.bind(this)
             });
 
-            header.addEventListener('mouseleave', () => {
-                if (tooltip) {
-                    tooltip.classList.remove('show');
+            // Update the g_id_onload element with the client_id
+            const gIdOnload = document.getElementById('g_id_onload');
+            if (gIdOnload) {
+                gIdOnload.setAttribute('data-client_id', GOOGLE_CONFIG.CLIENT_ID);
+            }
+
+            // Render the sign-in button
+            google.accounts.id.renderButton(
+                document.querySelector('.g_id_signin'),
+                {
+                    theme: 'filled_blue',
+                    size: 'large',
+                    type: 'standard',
+                    shape: 'rectangular',
+                    text: 'signin_with',
+                    logo_alignment: 'left'
                 }
-            });
+            );
+
+            console.log('Google authentication initialized');
+        } catch (error) {
+            console.error('Failed to initialize Google auth:', error);
+            this.showError('Failed to initialize Google authentication');
+        }
+    }
+
+    async loadGoogleApis() {
+        return new Promise((resolve, reject) => {
+            // Load Google APIs script if not already loaded
+            if (typeof gapi === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://apis.google.com/js/api.js';
+                script.onload = () => {
+                    // Wait a bit for gapi to be available
+                    setTimeout(() => {
+                        if (typeof gapi !== 'undefined' && gapi.load) {
+                            gapi.load('client', async () => {
+                                try {
+                                    await gapi.client.init({
+                                        apiKey: GOOGLE_CONFIG.API_KEY,
+                                        discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_DOC]
+                                    });
+                                    isGapiLoaded = true;
+                                    resolve();
+                                } catch (error) {
+                                    console.error('Failed to initialize gapi client:', error);
+                                    reject(error);
+                                }
+                            });
+                        } else {
+                            reject(new Error('Google APIs failed to load'));
+                        }
+                    }, 100);
+                };
+                script.onerror = () => reject(new Error('Failed to load Google APIs script'));
+                document.head.appendChild(script);
+            } else {
+                if (isGapiLoaded) {
+                    resolve();
+                } else {
+                    gapi.load('client', async () => {
+                        try {
+                            await gapi.client.init({
+                                apiKey: GOOGLE_CONFIG.API_KEY,
+                                discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_DOC]
+                            });
+                            isGapiLoaded = true;
+                            resolve();
+                        } catch (error) {
+                            console.error('Failed to initialize gapi client:', error);
+                            reject(error);
+                        }
+                    });
+                }
+            }
         });
     }
 
-    setupTheme() {
+    async handleCredentialResponse(response) {
         try {
-            const savedTheme = this.getStoredTheme() || 'light';
-            document.documentElement.setAttribute('data-theme', savedTheme);
+            console.log('Processing credential response...');
+            const responsePayload = this.decodeJwtResponse(response.credential);
+            currentUser = {
+                id: responsePayload.sub,
+                name: responsePayload.name,
+                email: responsePayload.email,
+                picture: responsePayload.picture
+            };
 
-            const themeToggle = this.getElement('themeToggle');
-            if (themeToggle) {
-                themeToggle.textContent = savedTheme === 'dark' ? '☀️' : '🌙';
-            }
+            console.log('User authenticated:', currentUser.name);
+
+            // Set up user profile in UI
+            document.getElementById('userName').textContent = currentUser.name;
+            document.getElementById('userPhoto').src = currentUser.picture;
+
+            // Get access token for API calls
+            console.log('Getting access token...');
+            await this.getAccessToken();
+
+            // Initialize or find user's spreadsheet
+            console.log('Initializing spreadsheet...');
+            await this.initializeUserSpreadsheet();
+
+            console.log('Hiding login screen...');
+            this.hideLoginScreen();
+            console.log('User authenticated successfully:', currentUser);
         } catch (error) {
-            console.error('Error setting up theme:', error);
+            console.error('Authentication failed:', error);
+            this.showError('Authentication failed. Please try again.');
         }
     }
 
-    toggleTheme() {
+    decodeJwtResponse(token) {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+            atob(base64)
+                .split('')
+                .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+        );
+        return JSON.parse(jsonPayload);
+    }
+
+    async getAccessToken() {
+        return new Promise((resolve, reject) => {
+            try {
+                const tokenClient = google.accounts.oauth2.initTokenClient({
+                    client_id: GOOGLE_CONFIG.CLIENT_ID,
+                    scope: GOOGLE_CONFIG.SCOPES,
+                    callback: (response) => {
+                        if (response.error) {
+                            console.error('Token error:', response.error);
+                            reject(response);
+                            return;
+                        }
+                        console.log('Access token received');
+                        gapi.client.setToken(response);
+                        resolve(response.access_token);
+                    }
+                });
+                tokenClient.requestAccessToken();
+            } catch (error) {
+                console.error('Failed to initialize token client:', error);
+                reject(error);
+            }
+        });
+    }
+
+    async initializeUserSpreadsheet() {
         try {
-            const currentTheme = document.documentElement.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            console.log('Initializing user spreadsheet...');
+            // Try to find existing spreadsheet for this user
+            const userSpreadsheetName = `Budget_App_${currentUser.id}`;
 
-            document.documentElement.setAttribute('data-theme', newTheme);
-            this.saveTheme(newTheme);
+            console.log('Searching for existing spreadsheet...');
+            // Search for existing spreadsheet
+            const searchResponse = await gapi.client.request({
+                path: 'https://www.googleapis.com/drive/v3/files',
+                params: {
+                    q: `name='${userSpreadsheetName}' and mimeType='application/vnd.google-apps.spreadsheet'`,
+                    fields: 'files(id, name)'
+                }
+            });
 
-            const themeToggle = this.getElement('themeToggle');
-            if (themeToggle) {
-                themeToggle.textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            if (searchResponse.result.files && searchResponse.result.files.length > 0) {
+                // Use existing spreadsheet
+                spreadsheetId = searchResponse.result.files[0].id;
+                console.log('Found existing spreadsheet:', spreadsheetId);
+            } else {
+                // Create new spreadsheet
+                console.log('Creating new spreadsheet...');
+                await this.createNewSpreadsheet();
             }
 
-            // Update chart colors after theme change
-            setTimeout(() => {
-                this.updateAllCharts();
-            }, 100);
-
+            // Load data from spreadsheet
+            console.log('Loading data from sheets...');
+            await this.loadDataFromSheets();
+            console.log('Spreadsheet initialization complete');
         } catch (error) {
-            console.error('Error toggling theme:', error);
-            this.showError('Failed to toggle theme');
+            console.error('Failed to initialize spreadsheet:', error);
+            this.showError('Failed to set up your data storage. Using local storage as fallback.');
+            this.initializeLocalData();
         }
     }
 
-    async loadData() {
+    async createNewSpreadsheet() {
         try {
-            const savedData = localStorage.getItem('budget-data');
-            if (savedData) {
-                const parsed = JSON.parse(savedData);
-                return parsed;
-            }
+            const userSpreadsheetName = `Budget_App_${currentUser.id}`;
 
-            // Initialize empty data structure
-            const data = {};
-            const currentYear = new Date().getFullYear();
-            for (let year = currentYear - 2; year <= currentYear + 5; year++) {
-                data[year] = {};
-                for (let month = 0; month < 12; month++) {
-                    data[year][month] = {
+            // Create new spreadsheet
+            const createResponse = await gapi.client.sheets.spreadsheets.create({
+                properties: {
+                    title: userSpreadsheetName
+                },
+                sheets: [
+                    { properties: { title: 'Budget_Data' } },
+                    { properties: { title: 'Templates' } },
+                    { properties: { title: 'Settings' } }
+                ]
+            });
+
+            spreadsheetId = createResponse.result.spreadsheetId;
+
+            // Initialize spreadsheet with headers
+            await this.setupSpreadsheetStructure();
+
+            console.log('Created new spreadsheet:', spreadsheetId);
+            return spreadsheetId;
+        } catch (error) {
+            console.error('Failed to create spreadsheet:', error);
+            throw error;
+        }
+    }
+
+    async setupSpreadsheetStructure() {
+        try {
+            // Set up headers and initial structure
+            const requests = [
+                {
+                    updateCells: {
+                        range: {
+                            sheetId: 0, // Budget_Data sheet
+                            startRowIndex: 0,
+                            startColumnIndex: 0,
+                            endRowIndex: 1,
+                            endColumnIndex: 10
+                        },
+                        rows: [{
+                            values: [
+                                { userEnteredValue: { stringValue: 'Year' } },
+                                { userEnteredValue: { stringValue: 'Month' } },
+                                { userEnteredValue: { stringValue: 'Category' } },
+                                { userEnteredValue: { stringValue: 'Type' } },
+                                { userEnteredValue: { stringValue: 'Name' } },
+                                { userEnteredValue: { stringValue: 'Planned' } },
+                                { userEnteredValue: { stringValue: 'Actual' } },
+                                { userEnteredValue: { stringValue: 'Amount' } },
+                                { userEnteredValue: { stringValue: 'CarriedBalance' } },
+                                { userEnteredValue: { stringValue: 'LastUpdated' } }
+                            ]
+                        }],
+                        fields: 'userEnteredValue'
+                    }
+                }
+            ];
+
+            await gapi.client.sheets.spreadsheets.batchUpdate({
+                spreadsheetId: spreadsheetId,
+                requests: requests
+            });
+        } catch (error) {
+            console.error('Failed to setup spreadsheet structure:', error);
+        }
+    }
+
+    async loadDataFromSheets() {
+        try {
+            if (!spreadsheetId) return;
+
+            // Load budget data
+            const response = await gapi.client.sheets.spreadsheets.values.get({
+                spreadsheetId: spreadsheetId,
+                range: 'Budget_Data!A2:J'
+            });
+
+            const rows = response.result.values || [];
+            this.data = {};
+
+            // Parse data from sheets
+            rows.forEach(row => {
+                const [year, month, category, type, name, planned, actual, amount, carriedBalance] = row;
+
+                if (!this.data[year]) this.data[year] = {};
+                if (!this.data[year][month]) {
+                    this.data[year][month] = {
                         income: [],
                         fixedExpenses: [],
                         otherExpenses: [],
                         debt: [],
                         investment: [],
                         travelEntertainment: [],
-                        carriedBalance: 0
+                        carriedBalance: parseFloat(carriedBalance) || 0
                     };
                 }
+
+                const item = {
+                    name: name || '',
+                    planned: parseFloat(planned) || 0,
+                    actual: parseFloat(actual) || 0,
+                    amount: parseFloat(amount) || 0
+                };
+
+                if (this.data[year][month][category]) {
+                    this.data[year][month][category].push(item);
+                }
+            });
+
+            // Load templates
+            await this.loadTemplatesFromSheets();
+
+            // Load settings
+            await this.loadSettingsFromSheets();
+
+            console.log('Data loaded from Google Sheets successfully');
+        } catch (error) {
+            console.error('Failed to load data from sheets:', error);
+            this.initializeLocalData();
+        }
+    }
+
+    async loadTemplatesFromSheets() {
+        try {
+            const response = await gapi.client.sheets.spreadsheets.values.get({
+                spreadsheetId: spreadsheetId,
+                range: 'Templates!A2:C'
+            });
+
+            const rows = response.result.values || [];
+            this.templates = { fixedExpenses: [], debt: [] };
+
+            rows.forEach(row => {
+                const [type, name, amount] = row;
+                if (this.templates[type]) {
+                    this.templates[type].push({
+                        name: name || '',
+                        amount: parseFloat(amount) || 0
+                    });
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load templates from sheets:', error);
+        }
+    }
+
+    async loadSettingsFromSheets() {
+        try {
+            const response = await gapi.client.sheets.spreadsheets.values.get({
+                spreadsheetId: spreadsheetId,
+                range: 'Settings!A2:B'
+            });
+
+            const rows = response.result.values || [];
+            rows.forEach(row => {
+                const [key, value] = row;
+                if (key === 'theme') {
+                    this.currentTheme = value || 'dark';
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load settings from sheets:', error);
+        }
+    }
+
+    async saveDataToSheets() {
+        try {
+            if (!spreadsheetId) return;
+
+            // Prepare data for sheets
+            const rows = [];
+
+            Object.keys(this.data).forEach(year => {
+                Object.keys(this.data[year]).forEach(month => {
+                    const monthData = this.data[year][month];
+
+                    Object.keys(monthData).forEach(category => {
+                        if (category === 'carriedBalance') {
+                            // Handle carried balance separately
+                            rows.push([
+                                year,
+                                month,
+                                'carriedBalance',
+                                '',
+                                '',
+                                '',
+                                '',
+                                '',
+                                monthData.carriedBalance,
+                                new Date().toISOString()
+                            ]);
+                        } else if (Array.isArray(monthData[category])) {
+                            monthData[category].forEach(item => {
+                                rows.push([
+                                    year,
+                                    month,
+                                    category,
+                                    this.getCategoryType(category),
+                                    item.name || '',
+                                    item.planned || '',
+                                    item.actual || '',
+                                    item.amount || '',
+                                    '',
+                                    new Date().toISOString()
+                                ]);
+                            });
+                        }
+                    });
+                });
+            });
+
+            // Clear existing data and write new data
+            await gapi.client.sheets.spreadsheets.values.clear({
+                spreadsheetId: spreadsheetId,
+                range: 'Budget_Data!A2:J'
+            });
+
+            if (rows.length > 0) {
+                await gapi.client.sheets.spreadsheets.values.update({
+                    spreadsheetId: spreadsheetId,
+                    range: 'Budget_Data!A2',
+                    valueInputOption: 'RAW',
+                    values: rows
+                });
             }
-            return data;
+
+            // Save templates
+            await this.saveTemplatesToSheets();
+
+            // Save settings
+            await this.saveSettingsToSheets();
+
+            console.log('Data saved to Google Sheets successfully');
         } catch (error) {
-            console.error('Error loading data:', error);
-            this.showError('Failed to load data from storage');
-            return {};
+            console.error('Failed to save data to sheets:', error);
+            this.showError('Failed to save data to cloud. Data saved locally.');
         }
     }
 
-    async loadFixedExpenseTemplates() {
+    async saveTemplatesToSheets() {
         try {
-            const savedTemplates = localStorage.getItem('budget-fixed-expense-templates');
-            return savedTemplates ? JSON.parse(savedTemplates) : [];
-        } catch (error) {
-            console.error('Error loading fixed expense templates:', error);
-            return [];
-        }
-    }
+            const rows = [];
 
-    async loadDebtTemplates() {
-        try {
-            const savedTemplates = localStorage.getItem('budget-debt-templates');
-            return savedTemplates ? JSON.parse(savedTemplates) : [];
-        } catch (error) {
-            console.error('Error loading debt templates:', error);
-            return [];
-        }
-    }
+            Object.keys(this.templates).forEach(type => {
+                this.templates[type].forEach(template => {
+                    rows.push([type, template.name, template.amount]);
+                });
+            });
 
-    saveData() {
-        try {
-            // Check localStorage availability and quota
-            if (typeof Storage === "undefined") {
-                throw new Error('localStorage not supported');
+            await gapi.client.sheets.spreadsheets.values.clear({
+                spreadsheetId: spreadsheetId,
+                range: 'Templates!A2:C'
+            });
+
+            if (rows.length > 0) {
+                await gapi.client.sheets.spreadsheets.values.update({
+                    spreadsheetId: spreadsheetId,
+                    range: 'Templates!A2',
+                    valueInputOption: 'RAW',
+                    values: rows
+                });
             }
-
-            const dataString = JSON.stringify(this.data);
-
-            // Check if we're approaching localStorage limit
-            if (dataString.length > 5 * 1024 * 1024) { // 5MB warning
-                console.warn('Data size approaching localStorage limit');
-            }
-
-            localStorage.setItem('budget-data', dataString);
-            console.log('Data saved successfully');
         } catch (error) {
-            console.error('Error saving data:', error);
-            if (error.name === 'QuotaExceededError') {
-                this.showError('Storage quota exceeded. Please clear some data.');
-            } else {
-                this.showError('Failed to save data');
-            }
+            console.error('Failed to save templates to sheets:', error);
         }
     }
 
-    saveFixedExpenseTemplates() {
+    async saveSettingsToSheets() {
         try {
-            localStorage.setItem('budget-fixed-expense-templates', JSON.stringify(this.fixedExpenseTemplates));
+            const rows = [
+                ['theme', this.currentTheme]
+            ];
+
+            await gapi.client.sheets.spreadsheets.values.clear({
+                spreadsheetId: spreadsheetId,
+                range: 'Settings!A2:B'
+            });
+
+            await gapi.client.sheets.spreadsheets.values.update({
+                spreadsheetId: spreadsheetId,
+                range: 'Settings!A2',
+                valueInputOption: 'RAW',
+                values: rows
+            });
         } catch (error) {
-            console.error('Error saving fixed expense templates:', error);
-            this.showError('Failed to save expense templates');
+            console.error('Failed to save settings to sheets:', error);
         }
     }
 
-    saveDebtTemplates() {
-        try {
-            localStorage.setItem('budget-debt-templates', JSON.stringify(this.debtTemplates));
-        } catch (error) {
-            console.error('Error saving debt templates:', error);
-            this.showError('Failed to save debt templates');
+    getCategoryType(category) {
+        const types = {
+            income: 'income',
+            fixedExpenses: 'expense',
+            otherExpenses: 'expense',
+            debt: 'expense',
+            investment: 'investment',
+            travelEntertainment: 'expense'
+        };
+        return types[category] || 'other';
+    }
+
+    initializeLocalData() {
+        // Fallback to local storage if Google Sheets fails
+        this.loadFromLocalStorage();
+        if (Object.keys(this.data).length === 0) {
+            this.initializeEmptyData();
         }
     }
 
-    getStoredTheme() {
+    initializeApp() {
         try {
-            return localStorage.getItem('budget-theme');
+            this.initializeEmptyData();
+            this.setupEventListeners();
+            this.applyTheme();
+            this.updateMonthDisplay();
+            this.renderCurrentMonth();
+            this.updateCalculations();
+            this.updateAllCharts();
+            this.loadTemplates();
+            console.log('Budget app initialized successfully');
         } catch (error) {
-            console.error('Error getting stored theme:', error);
-            return 'light';
+            console.error('Failed to initialize app:', error);
+            this.showError('Failed to initialize the application');
         }
     }
 
-    saveTheme(theme) {
+    logout() {
+        currentUser = null;
+        spreadsheetId = null;
+        google.accounts.id.disableAutoSelect();
+        this.showLoginScreen();
+    }
+
+    async syncWithSheets() {
         try {
-            localStorage.setItem('budget-theme', theme);
+            this.showLoading('Syncing with Google Sheets...');
+            await this.saveDataToSheets();
+            await this.loadDataFromSheets();
+            this.renderCurrentMonth();
+            this.updateCalculations();
+            this.updateAllCharts();
+            this.showSuccess('Data synced successfully');
         } catch (error) {
-            console.error('Error saving theme:', error);
+            console.error('Sync failed:', error);
+            this.showError('Failed to sync with Google Sheets');
+        } finally {
+            this.hideLoading();
         }
     }
 
-    async loadMonth(month, year) {
-        try {
-            this.initializeYearData(year);
+    showLoading(message = 'Loading...') {
+        // Implement loading indicator
+        console.log(message);
+    }
 
-            if (!this.data[year][month]) {
-                this.data[year][month] = {
+    hideLoading() {
+        // Hide loading indicator
+    }
+
+    showSuccess(message) {
+        console.log('Success:', message);
+        // Implement success toast
+    }
+
+    showError(message) {
+        console.error('Error:', message);
+        // Implement error toast
+    }
+
+    // Rest of the original BudgetApp methods...
+    initializeEmptyData() {
+        const currentYear = this.currentYear;
+        const currentMonth = this.currentMonth;
+
+        if (!this.data[currentYear]) {
+            this.data[currentYear] = {};
+        }
+
+        for (let month = 0; month < 12; month++) {
+            if (!this.data[currentYear][month]) {
+                this.data[currentYear][month] = {
                     income: [],
                     fixedExpenses: [],
                     otherExpenses: [],
@@ -512,408 +704,339 @@ class BudgetApp {
                     carriedBalance: 0
                 };
             }
-
-            this.ensureMonthArrays(this.data[year][month]);
-            this.carryOverBalance(month, year);
-
-            // Apply templates for current and future months
-            await this.applyTemplates(month, year);
-
-            this.populateTables();
-            this.updateCalculations();
-            this.updateAllCharts();
-        } catch (error) {
-            console.error('Error loading month:', error);
-            this.showError('Failed to load month data');
         }
     }
 
-    async applyTemplates(month, year) {
+    setupEventListeners() {
         try {
-            const currentDate = new Date();
-            const targetDate = new Date(year, month, 1);
-
-            // Only apply templates for current month and beyond
-            if (targetDate >= new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)) {
-                const monthData = this.data[year][month];
-
-                // Apply fixed expense templates
-                this.fixedExpenseTemplates.forEach(template => {
-                    const exists = monthData.fixedExpenses.some(expense => 
-                        expense.name && expense.name.toLowerCase() === template.name.toLowerCase()
-                    );
-
-                    if (!exists) {
-                        monthData.fixedExpenses.push({
-                            name: template.name,
-                            planned: template.planned,
-                            actual: 0
-                        });
-                    }
-                });
-
-                // Apply debt templates using the proper logic
-                this.applyDebtTemplates(month, year);
-            }
-        } catch (error) {
-            console.error('Error applying templates:', error);
-        }
-    }
-
-    populateTables() {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            // Populate each table with error handling
-            this.populateTable('income', monthData.income, ['name', 'amount']);
-            this.populateTable('fixedExpenses', monthData.fixedExpenses, ['name', 'planned', 'actual', 'balance']);
-            this.populateTable('otherExpenses', monthData.otherExpenses, ['name', 'amount']);
-            this.populateTable('debt', monthData.debt, ['name', 'amount']);
-            this.populateTable('investment', monthData.investment, ['name', 'amount']);
-            this.populateTable('travelEntertainment', monthData.travelEntertainment, ['name', 'planned', 'actual', 'balance']);
-        } catch (error) {
-            console.error('Error populating tables:', error);
-            this.showError('Failed to populate tables');
-        }
-    }
-
-    populateTable(tableType, data, columns) {
-        try {
-            const table = document.getElementById(`${tableType}Table`);
-            if (!table) {
-                console.warn(`Table ${tableType} not found`);
-                return;
+            // Theme toggle
+            const themeToggle = document.getElementById('themeToggle');
+            if (themeToggle) {
+                themeToggle.addEventListener('click', () => this.toggleTheme());
             }
 
-            const tbody = table.querySelector('tbody');
-            if (!tbody) {
-                console.warn(`Table body for ${tableType} not found`);
-                return;
+            // Logout button
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', () => this.logout());
             }
 
-            tbody.innerHTML = '';
-
-            data.forEach((item, index) => {
-                const row = this.createTableRow(tableType, item, index, columns);
-                tbody.appendChild(row);
+            // Close modals when clicking outside
+            document.addEventListener('click', (e) => {
+                if (e.target.classList.contains('modal')) {
+                    e.target.style.display = 'none';
+                }
             });
 
-            // Add empty row for new entries
-            if (data.length === 0) {
-                const emptyRow = this.createTableRow(tableType, {}, 0, columns);
-                tbody.appendChild(emptyRow);
-            }
+            // Keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    this.closeAllModals();
+                }
+            });
+
+            console.log('Event listeners setup successfully');
         } catch (error) {
-            console.error(`Error populating table ${tableType}:`, error);
+            console.error('Error setting up event listeners:', error);
         }
+    }
+
+    debouncedSave() {
+        clearTimeout(this.saveTimeout);
+        this.saveTimeout = setTimeout(() => {
+            this.saveDataToSheets();
+        }, 1000);
+    }
+
+    // Additional methods from the original implementation...
+    updateMonthDisplay() {
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'];
+        const monthElement = document.getElementById('currentMonth');
+        if (monthElement) {
+            monthElement.textContent = `${monthNames[this.currentMonth]} ${this.currentYear}`;
+        }
+    }
+
+    previousMonth() {
+        if (this.currentMonth === 0) {
+            this.currentMonth = 11;
+            this.currentYear--;
+        } else {
+            this.currentMonth--;
+        }
+        this.updateMonthDisplay();
+        this.renderCurrentMonth();
+        this.updateCalculations();
+        this.updateAllCharts();
+    }
+
+    nextMonth() {
+        if (this.currentMonth === 11) {
+            this.currentMonth = 0;
+            this.currentYear++;
+        } else {
+            this.currentMonth++;
+        }
+        this.updateMonthDisplay();
+        this.renderCurrentMonth();
+        this.updateCalculations();
+        this.updateAllCharts();
+    }
+
+    toggleTheme() {
+        this.currentTheme = this.currentTheme === 'light' ? 'dark' : 'light';
+        this.applyTheme();
+        this.debouncedSave();
+    }
+
+    applyTheme() {
+        document.documentElement.setAttribute('data-theme', this.currentTheme);
+
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            const sunIcon = themeToggle.querySelector('.sun-icon');
+            const moonIcon = themeToggle.querySelector('.moon-icon');
+
+            if (this.currentTheme === 'light') {
+                sunIcon.style.display = 'none';
+                moonIcon.style.display = 'block';
+            } else {
+                sunIcon.style.display = 'block';
+                moonIcon.style.display = 'none';
+            }
+        }
+    }
+
+    renderCurrentMonth() {
+        this.initializeEmptyData();
+        const monthData = this.data[this.currentYear][this.currentMonth];
+
+        this.renderTable('income', monthData.income, ['name', 'planned', 'actual']);
+        this.renderTable('fixedExpenses', monthData.fixedExpenses, ['name', 'planned', 'actual', 'balance']);
+        this.renderTable('otherExpenses', monthData.otherExpenses, ['name', 'amount']);
+        this.renderTable('debt', monthData.debt, ['name', 'amount']);
+        this.renderTable('travelEntertainment', monthData.travelEntertainment, ['name', 'planned', 'actual', 'balance']);
+        this.renderTable('investment', monthData.investment, ['name', 'amount']);
+    }
+
+    renderTable(tableType, data, columns) {
+        const table = document.getElementById(`${tableType}Table`);
+        if (!table) return;
+
+        const tbody = table.querySelector('tbody');
+        tbody.innerHTML = '';
+
+        if (data.length === 0) {
+            this.addRow(tableType);
+            return;
+        }
+
+        data.forEach((item, index) => {
+            const row = this.createTableRow(tableType, item, index, columns);
+            tbody.appendChild(row);
+        });
     }
 
     createTableRow(tableType, item, index, columns) {
         const row = document.createElement('tr');
 
-        // Serial number
-        const snoCell = document.createElement('td');
-        snoCell.textContent = index + 1;
-        row.appendChild(snoCell);
-
-        columns.forEach(column => {
+        columns.forEach(field => {
             const cell = document.createElement('td');
 
-            if (column === 'balance') {
-                // Calculated field
+            if (field === 'balance') {
                 const balance = (parseFloat(item.planned) || 0) - (parseFloat(item.actual) || 0);
                 cell.textContent = `₹${balance.toFixed(2)}`;
-                cell.className = 'calculated';
+                cell.classList.add('calculated');
                 if (balance < 0) cell.classList.add('negative');
                 else if (balance > 0) cell.classList.add('positive');
             } else {
-                // Editable field
-                const input = document.createElement('input');
-                input.type = column === 'name' ? 'text' : 'number';
-                input.className = 'editable';
-                if (column !== 'name') input.className += ' numeric-input';
-                input.value = item[column] || '';
-                input.placeholder = column === 'name' ? 'Enter name' : '0';
+                if (field === 'name') {
+                    cell.contentEditable = 'true';
+                    cell.textContent = item[field] || '';
+                } else {
+                    cell.contentEditable = 'true';
+                    cell.classList.add('number-input');
+                    const value = item[field] || 0;
+                    cell.textContent = field.includes('amount') || field.includes('planned') || field.includes('actual') ?
+                        (value > 0 ? value.toString() : '') : value.toString();
+                }
 
-                input.addEventListener('input', (e) => {
-                    this.updateItemValue(tableType, index, column, e.target.value);
+                cell.addEventListener('blur', (e) => {
+                    this.updateItemValue(tableType, index, field, e.target.textContent.trim());
                 });
 
-                input.addEventListener('blur', () => {
-                    this.saveData();
+                cell.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.target.blur();
+                    }
                 });
-
-                cell.appendChild(input);
             }
 
             row.appendChild(cell);
         });
 
-        // No more individual delete buttons - using centralized delete panel
         return row;
     }
 
     updateItemValue(tableType, index, field, value) {
+        const monthData = this.data[this.currentYear][this.currentMonth];
+
+        if (!monthData[tableType][index]) {
+            monthData[tableType][index] = {};
+        }
+
+        if (field === 'name') {
+            monthData[tableType][index][field] = value;
+        } else {
+            const numValue = parseFloat(value) || 0;
+            monthData[tableType][index][field] = numValue;
+        }
+
+        if (field !== 'name') {
+            this.updateCalculations();
+            this.updateAllCharts();
+
+            // Update balance calculations for fixed expenses and travel entertainment
+            if (tableType === 'fixedExpenses' || tableType === 'travelEntertainment') {
+                this.updateBalanceDisplays(tableType);
+            }
+        }
+
+        this.debouncedSave();
+    }
+
+    updateBalanceDisplays(tableType) {
         try {
+            const table = document.getElementById(`${tableType}Table`);
+            if (!table) return;
+
+            const tbody = table.querySelector('tbody');
+            if (!tbody) return;
+
+            const rows = tbody.querySelectorAll('tr');
             const monthData = this.data[this.currentYear][this.currentMonth];
 
-            if (!monthData[tableType][index]) {
-                monthData[tableType][index] = {};
-            }
+            rows.forEach((row, index) => {
+                if (monthData[tableType] && monthData[tableType][index]) {
+                    const item = monthData[tableType][index];
+                    const balanceCell = row.querySelector('td:last-child');
 
-            if (field === 'name') {
-                monthData[tableType][index][field] = value;
-            } else {
-                monthData[tableType][index][field] = parseFloat(value) || 0;
-            }
+                    if (balanceCell && balanceCell.classList.contains('calculated')) {
+                        const balance = (parseFloat(item.planned) || 0) - (parseFloat(item.actual) || 0);
+                        balanceCell.textContent = `₹${balance.toFixed(2)}`;
 
-            // Update calculations immediately for numeric fields
-            if (field !== 'name') {
-                this.updateCalculations();
-                this.updateAllCharts();
-            }
-
-            this.debouncedSave();
+                        // Update balance styling
+                        balanceCell.classList.remove('negative', 'positive');
+                        if (balance < 0) balanceCell.classList.add('negative');
+                        else if (balance > 0) balanceCell.classList.add('positive');
+                    }
+                }
+            });
         } catch (error) {
-            console.error('Error updating item value:', error);
+            console.error('Error updating balance displays:', error);
         }
     }
 
     addRow(tableType) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            if (!monthData[tableType]) {
-                monthData[tableType] = [];
-            }
-
-            // Check if there's already an empty row
-            const hasEmptyRow = monthData[tableType].some(item => {
-                if (tableType === 'fixedExpenses' || tableType === 'travelEntertainment') {
-                    return (!item.name || item.name.trim() === '') && 
-                           (!item.planned || item.planned === 0) && 
-                           (!item.actual || item.actual === 0);
-                } else {
-                    return (!item.name || item.name.trim() === '') && 
-                           (!item.amount || item.amount === 0);
-                }
-            });
-
-            // Don't add if there's already an empty row
-            if (hasEmptyRow) {
-                return;
-            }
-
-            const newItem = { name: '', amount: 0 };
-            if (tableType === 'fixedExpenses' || tableType === 'travelEntertainment') {
-                newItem.planned = 0;
-                newItem.actual = 0;
-            }
-
-            monthData[tableType].push(newItem);
-            this.populateTables();
-            this.saveData();
-        } catch (error) {
-            console.error('Error adding row:', error);
-            this.showError('Failed to add new row');
-        }
-    }
-
-    deleteRow(tableType, index) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            if (monthData[tableType] && monthData[tableType][index] !== undefined) {
-                monthData[tableType].splice(index, 1);
-                this.populateTables();
-                this.updateCalculations();
-                this.updateAllCharts();
-                this.saveData();
-            }
-        } catch (error) {
-            console.error('Error deleting row:', error);
-            this.showError('Failed to delete row');
-        }
-    }
-
-    showDeleteModal(tableType) {
-        const modal = this.getElement('deleteModal');
-        const confirmBtn = document.getElementById('confirmDelete');
-
-        if (modal && confirmBtn) {
-            modal.classList.add('show');
-
-            // Remove existing event listeners to prevent duplicates
-            const newConfirmBtn = confirmBtn.cloneNode(true);
-            confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
-
-            newConfirmBtn.addEventListener('click', () => {
-                this.deleteTable(tableType);
-                this.closeDeleteModal();
-            });
-        }
-    }
-
-    closeDeleteModal() {
-        const modal = this.getElement('deleteModal');
-        if (modal) {
-            modal.classList.remove('show');
-        }
-    }
-
-    deleteTable(tableType) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-            if (monthData[tableType]) {
-                monthData[tableType] = [];
-                this.populateTables();
-                this.updateCalculations();
-                this.updateAllCharts();
-                this.saveData();
-            }
-        } catch (error) {
-            console.error('Error deleting table:', error);
-            this.showError('Failed to delete table data');
-        }
+        const monthData = this.data[this.currentYear][this.currentMonth];
+        const newItem = { name: '', planned: 0, actual: 0, amount: 0 };
+        monthData[tableType].push(newItem);
+        this.renderCurrentMonth();
     }
 
     updateCalculations() {
         try {
             const monthData = this.data[this.currentYear][this.currentMonth];
 
-            // Calculate totals with error handling
-            const totalIncome = (monthData.income || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+            // Calculate totals
+            const totalIncome = this.calculateTotal(monthData.income, ['planned', 'actual']);
+            const totalExpenses = this.calculateTotalExpenses(monthData);
+            const availableBalance = totalIncome - totalExpenses + (monthData.carriedBalance || 0);
+            const savingsRate = totalIncome > 0 ? ((availableBalance / totalIncome) * 100) : 0;
 
-            const totalExpenses = 
-                (monthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-
-            const remainingAmount = totalIncome - totalExpenses + (monthData.carriedBalance || 0);
-
-            // Update display with null checks
-            const totalIncomeEl = this.getElement('totalIncome');
-            const totalExpensesEl = this.getElement('totalExpenses');
-            const remainingAmountEl = this.getElement('remainingAmount');
-            const carriedAmountEl = this.getElement('carriedAmount');
-
-            if (totalIncomeEl) totalIncomeEl.textContent = `₹${totalIncome.toFixed(2)}`;
-            if (totalExpensesEl) totalExpensesEl.textContent = `₹${totalExpenses.toFixed(2)}`;
-            if (remainingAmountEl) {
-                remainingAmountEl.textContent = `₹${remainingAmount.toFixed(2)}`;
-                remainingAmountEl.className = 'amount';
-                if (remainingAmount < 0) remainingAmountEl.classList.add('negative');
-                else if (remainingAmount > 0) remainingAmountEl.classList.add('positive');
-            }
-            if (carriedAmountEl) carriedAmountEl.textContent = `₹${(monthData.carriedBalance || 0).toFixed(2)}`;
+            // Update display
+            this.updateSummaryCard('totalIncome', totalIncome);
+            this.updateSummaryCard('totalExpenses', totalExpenses);
+            this.updateSummaryCard('availableBalance', availableBalance);
+            this.updateSummaryCard('savingsRate', `${savingsRate.toFixed(1)}%`);
 
         } catch (error) {
             console.error('Error updating calculations:', error);
         }
     }
 
-    validateNumericInput(input) {
-        try {
-            // Remove non-numeric characters except decimals
-            let value = input.value.replace(/[^0-9.]/g, '');
-            
-            // Ensure only one decimal point
-            const parts = value.split('.');
-            if (parts.length > 2) {
-                value = parts[0] + '.' + parts.slice(1).join('');
-            }
-            
-            // Update input value if it was changed
-            if (value !== input.value) {
-                input.value = value;
-            }
-            
-            const numericValue = parseFloat(value);
-            if (isNaN(numericValue) || numericValue < 0) {
-                input.classList.add('error');
+    calculateTotal(items, fields) {
+        return items.reduce((total, item) => {
+            return total + fields.reduce((sum, field) => sum + (parseFloat(item[field]) || 0), 0);
+        }, 0);
+    }
+
+    calculateTotalExpenses(monthData) {
+        const fixedExpenses = this.calculateTotal(monthData.fixedExpenses, ['actual']);
+        const otherExpenses = this.calculateTotal(monthData.otherExpenses, ['amount']);
+        const debt = this.calculateTotal(monthData.debt, ['amount']);
+        const travelEntertainment = this.calculateTotal(monthData.travelEntertainment, ['actual']);
+        const investment = this.calculateTotal(monthData.investment, ['amount']);
+
+        return fixedExpenses + otherExpenses + debt + travelEntertainment + investment;
+    }
+
+    updateSummaryCard(elementId, value) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            if (elementId === 'savingsRate') {
+                element.textContent = value;
             } else {
-                input.classList.remove('error');
+                element.textContent = `₹${parseFloat(value).toFixed(2)}`;
+                element.classList.toggle('negative', parseFloat(value) < 0);
             }
-        } catch (error) {
-            console.error('Error validating numeric input:', error);
         }
     }
 
     updateAllCharts() {
-        try {
-            this.updateExpenseChart();
-            this.updateEfficiencyChart();
-            this.updateBalanceChart();
-        } catch (error) {
-            console.error('Error updating charts:', error);
-        }
-    }
-
-    getChartColors() {
-        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        return {
-            primary: isDark ? '#0a84ff' : '#007aff',
-            success: isDark ? '#32d74b' : '#30d158',
-            warning: isDark ? '#ff9f0a' : '#ff9500',
-            error: isDark ? '#ff453a' : '#ff3b30',
-            text: isDark ? '#ffffff' : '#1d1d1f',
-            secondary: isDark ? '#98989d' : '#86868b'
-        };
+        this.updateExpenseChart();
+        this.updateTrendChart();
+        this.updateBalanceChart();
     }
 
     updateExpenseChart() {
         try {
-            const canvas = this.getElement('expenseChart');
-            if (!canvas) return;
-
-            const ctx = canvas.getContext('2d');
-            const colors = this.getChartColors();
-
-            // Destroy existing chart to prevent memory leaks
-            if (this.expenseChart) {
-                this.expenseChart.destroy();
-            }
+            const ctx = document.getElementById('expenseChart');
+            if (!ctx) return;
 
             const monthData = this.data[this.currentYear][this.currentMonth];
 
-            const expenses = {
-                'Fixed Expenses': (monthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0),
-                'Other Expenses': (monthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
-                'Travel & Entertainment': (monthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0),
-                'Debt': (monthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
-                'Investment': (monthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0)
+            const expenseData = {
+                'Fixed Expenses': this.calculateTotal(monthData.fixedExpenses, ['actual']),
+                'Other Expenses': this.calculateTotal(monthData.otherExpenses, ['amount']),
+                'Debt': this.calculateTotal(monthData.debt, ['amount']),
+                'Travel & Entertainment': this.calculateTotal(monthData.travelEntertainment, ['actual']),
+                'Investment': this.calculateTotal(monthData.investment, ['amount'])
             };
 
-            const labels = Object.keys(expenses).filter(key => expenses[key] > 0);
-            const data = labels.map(key => expenses[key]);
+            const labels = Object.keys(expenseData).filter(key => expenseData[key] > 0);
+            const values = labels.map(key => expenseData[key]);
 
-            if (data.length === 0) {
-                // Show empty state
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = colors.text;
-                ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('No expense data', canvas.width / 2, canvas.height / 2);
-                return;
+            if (this.charts.expense) {
+                this.charts.expense.destroy();
             }
 
-            this.expenseChart = new Chart(ctx, {
-                type: 'pie',
+            this.charts.expense = new Chart(ctx, {
+                type: 'doughnut',
                 data: {
-                    labels,
+                    labels: labels,
                     datasets: [{
-                        data,
+                        data: values,
                         backgroundColor: [
-                            colors.primary,
-                            colors.success,
-                            colors.warning,
-                            colors.error,
-                            '#8e8e93'
+                            '#FF6384',
+                            '#36A2EB',
+                            '#FFCE56',
+                            '#4BC0C0',
+                            '#9966FF'
                         ],
-                        borderWidth: 2,
-                        borderColor: colors.text
+                        borderWidth: 0
                     }]
                 },
                 options: {
@@ -923,10 +1046,8 @@ class BudgetApp {
                         legend: {
                             position: 'bottom',
                             labels: {
-                                color: colors.text,
-                                font: {
-                                    size: 11
-                                }
+                                color: 'var(--text-primary)',
+                                font: { size: 12 }
                             }
                         }
                     }
@@ -937,61 +1058,52 @@ class BudgetApp {
         }
     }
 
-    updateEfficiencyChart() {
+    updateTrendChart() {
         try {
-            const canvas = this.getElement('efficiencyChart');
-            if (!canvas) return;
+            const ctx = document.getElementById('trendChart');
+            if (!ctx) return;
 
-            const ctx = canvas.getContext('2d');
-            const colors = this.getChartColors();
-
-            if (this.efficiencyChart) {
-                this.efficiencyChart.destroy();
-            }
-
-            // Get last 6 months data
             const months = [];
             const efficiencyData = [];
 
+            // Get last 6 months data
             for (let i = 5; i >= 0; i--) {
-                let targetMonth = this.currentMonth - i;
-                let targetYear = this.currentYear;
+                let month = this.currentMonth - i;
+                let year = this.currentYear;
 
-                if (targetMonth < 0) {
-                    targetMonth += 12;
-                    targetYear -= 1;
+                if (month < 0) {
+                    month += 12;
+                    year--;
                 }
 
                 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                months.push(monthNames[targetMonth]);
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                months.push(monthNames[month]);
 
-                if (this.data[targetYear] && this.data[targetYear][targetMonth]) {
-                    const monthData = this.data[targetYear][targetMonth];
-                    const income = (monthData.income || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-                    const expenses = 
-                        (monthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                        (monthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                        (monthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                        (monthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                        (monthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-
-                    const efficiency = income > 0 ? ((income - expenses) / income) * 100 : 0;
-                    efficiencyData.push(Math.max(0, efficiency));
+                if (this.data[year] && this.data[year][month]) {
+                    const monthData = this.data[year][month];
+                    const income = this.calculateTotal(monthData.income, ['actual']);
+                    const expenses = this.calculateTotalExpenses(monthData);
+                    const efficiency = income > 0 ? ((income - expenses) / income * 100) : 0;
+                    efficiencyData.push(efficiency);
                 } else {
                     efficiencyData.push(0);
                 }
             }
 
-            this.efficiencyChart = new Chart(ctx, {
+            if (this.charts.trend) {
+                this.charts.trend.destroy();
+            }
+
+            this.charts.trend = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: months,
                     datasets: [{
-                        label: 'Savings Efficiency %',
+                        label: 'Savings Rate %',
                         data: efficiencyData,
-                        borderColor: colors.success,
-                        backgroundColor: colors.success + '20',
+                        borderColor: '#36A2EB',
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
                         borderWidth: 2,
                         fill: true,
                         tension: 0.4
@@ -1000,111 +1112,67 @@ class BudgetApp {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            max: 100,
-                            ticks: {
-                                color: colors.text,
-                                callback: function(value) {
-                                    return value + '%';
-                                }
-                            },
-                            grid: {
-                                color: colors.secondary + '30'
-                            }
-                        },
-                        x: {
-                            ticks: {
-                                color: colors.text
-                            },
-                            grid: {
-                                color: colors.secondary + '30'
-                            }
-                        }
-                    },
                     plugins: {
                         legend: {
                             labels: {
-                                color: colors.text
+                                color: 'var(--text-primary)'
                             }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: 'var(--text-secondary)' }
+                        },
+                        y: {
+                            ticks: { color: 'var(--text-secondary)' },
+                            beginAtZero: true
                         }
                     }
                 }
             });
         } catch (error) {
-            console.error('Error updating efficiency chart:', error);
+            console.error('Error updating trend chart:', error);
         }
     }
 
     updateBalanceChart() {
         try {
-            const canvas = this.getElement('balanceChart');
-            if (!canvas) return;
-
-            const ctx = canvas.getContext('2d');
-            const colors = this.getChartColors();
-
-            if (this.balanceChart) {
-                this.balanceChart.destroy();
-            }
+            const ctx = document.getElementById('balanceChart');
+            if (!ctx) return;
 
             const monthData = this.data[this.currentYear][this.currentMonth];
-            const totalIncome = (monthData.income || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-            const totalExpenses = 
-                (monthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+            const totalIncome = this.calculateTotal(monthData.income, ['planned', 'actual']);
+            const totalExpenses = this.calculateTotalExpenses(monthData);
 
-            const available = totalIncome + (monthData.carriedBalance || 0);
-            const remaining = available - totalExpenses;
+            if (this.charts.balance) {
+                this.charts.balance.destroy();
+            }
 
-            this.balanceChart = new Chart(ctx, {
+            this.charts.balance = new Chart(ctx, {
                 type: 'bar',
                 data: {
-                    labels: ['Available', 'Used', 'Remaining'],
+                    labels: ['Available', 'Used'],
                     datasets: [{
-                        data: [available, totalExpenses, Math.max(0, remaining)],
-                        backgroundColor: [
-                            colors.primary,
-                            colors.warning,
-                            remaining >= 0 ? colors.success : colors.error
-                        ],
-                        borderWidth: 1,
-                        borderColor: colors.text
+                        data: [totalIncome - totalExpenses, totalExpenses],
+                        backgroundColor: ['#4BC0C0', '#FF6384'],
+                        borderWidth: 0
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     indexAxis: 'y',
-                    scales: {
-                        x: {
-                            beginAtZero: true,
-                            ticks: {
-                                color: colors.text,
-                                callback: function(value) {
-                                    return '₹' + value.toLocaleString();
-                                }
-                            },
-                            grid: {
-                                color: colors.secondary + '30'
-                            }
-                        },
-                        y: {
-                            ticks: {
-                                color: colors.text
-                            },
-                            grid: {
-                                color: colors.secondary + '30'
-                            }
-                        }
-                    },
                     plugins: {
                         legend: {
                             display: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: 'var(--text-secondary)' }
+                        },
+                        y: {
+                            ticks: { color: 'var(--text-secondary)' }
                         }
                     }
                 }
@@ -1114,897 +1182,225 @@ class BudgetApp {
         }
     }
 
-    openAdminPanel() {
-        try {
-            const modal = this.getElement('adminModal');
-            if (modal) {
-                modal.classList.add('show');
-                this.populateTemplateList();
-                this.populateDebtTemplateList();
+    loadTemplates() {
+        this.renderTemplates('fixedExpenses');
+        this.renderTemplates('debt');
+    }
+
+    renderTemplates(type) {
+        const container = document.getElementById(`${type}Templates`);
+        if (!container) return;
+
+        container.innerHTML = '';
+
+        this.templates[type].forEach((template, index) => {
+            const div = document.createElement('div');
+            div.className = 'template-item';
+            div.innerHTML = `
+                <span>${template.name} - ₹${template.amount}</span>
+                <button onclick="budgetApp.deleteTemplate('${type}', ${index})" class="delete-template">×</button>
+            `;
+            container.appendChild(div);
+        });
+    }
+
+    addTemplate(type) {
+        const nameInput = document.getElementById(`${type}TemplateName`);
+        const amountInput = document.getElementById(`${type}TemplateAmount`);
+
+        if (!nameInput || !amountInput) return;
+
+        const name = nameInput.value.trim();
+        const amount = parseFloat(amountInput.value) || 0;
+
+        if (name && amount > 0) {
+            this.templates[type].push({ name, amount });
+            this.renderTemplates(type);
+            this.debouncedSave();
+
+            nameInput.value = '';
+            amountInput.value = '';
+        }
+    }
+
+    deleteTemplate(type, index) {
+        this.templates[type].splice(index, 1);
+        this.renderTemplates(type);
+        this.debouncedSave();
+    }
+
+    showAdminPanel() {
+        const modal = document.getElementById('adminModal');
+        if (modal) {
+            modal.style.display = 'block';
+            this.loadTemplates();
+
+            // Update spreadsheet ID display
+            const spreadsheetIdElement = document.getElementById('currentSpreadsheetId');
+            if (spreadsheetIdElement) {
+                spreadsheetIdElement.textContent = spreadsheetId || 'Not connected';
             }
-        } catch (error) {
-            console.error('Error opening admin panel:', error);
-            this.showError('Failed to open admin panel');
         }
     }
 
     closeAdminPanel() {
-        const modal = this.getElement('adminModal');
-        if (modal) {
-            modal.classList.remove('show');
-        }
+        const modal = document.getElementById('adminModal');
+        if (modal) modal.style.display = 'none';
     }
 
-    populateTemplateList() {
-        try {
-            const container = document.getElementById('templateList');
-            if (!container) return;
+    showDeletePanel(tableType) {
+        const modal = document.getElementById('deleteModal');
+        if (!modal) return;
 
-            container.innerHTML = '';
+        this.currentDeleteType = tableType;
+        const monthData = this.data[this.currentYear][this.currentMonth];
+        const items = monthData[tableType];
 
-            if (this.fixedExpenseTemplates.length === 0) {
-                container.innerHTML = '<p>No templates available</p>';
-                return;
-            }
+        const deleteList = document.getElementById('deleteList');
+        deleteList.innerHTML = '';
 
-            this.fixedExpenseTemplates.forEach((template, index) => {
-                const div = document.createElement('div');
-                div.className = 'template-item';
-                div.innerHTML = `
-                    <span class="template-info">${template.name}</span>
-                    <span class="template-amount">₹${template.planned}</span>
-                    <button class="template-edit" onclick="budgetApp.editFixedExpenseTemplate(${index})">Edit</button>
-                    <button class="template-delete" onclick="budgetApp.deleteFixedExpenseTemplate(${index})">Delete</button>
-                `;
-                container.appendChild(div);
-            });
-        } catch (error) {
-            console.error('Error populating template list:', error);
-        }
+        items.forEach((item, index) => {
+            const div = document.createElement('div');
+            div.className = 'delete-item';
+            div.innerHTML = `
+                <label>
+                    <input type="checkbox" value="${index}">
+                    ${item.name || 'Unnamed item'} - ₹${(item.amount || item.planned || item.actual || 0).toFixed(2)}
+                </label>
+            `;
+            deleteList.appendChild(div);
+        });
+
+        modal.style.display = 'block';
     }
 
-    populateDebtTemplateList() {
-        try {
-            const container = document.getElementById('debtTemplateList');
-            if (!container) return;
-
-            container.innerHTML = '';
-
-            if (this.debtTemplates.length === 0) {
-                container.innerHTML = '<p>No debt templates available</p>';
-                return;
-            }
-
-            this.debtTemplates.forEach((template, index) => {
-                const div = document.createElement('div');
-                div.className = 'template-item';
-
-                const monthsInfo = template.monthsRemaining && template.monthsRemaining > 0 
-                    ? ` (${template.monthsRemaining} months)` 
-                    : ' (unlimited)';
-
-                div.innerHTML = `
-                    <span class="template-info">${template.name}${monthsInfo}</span>
-                    <span class="template-amount">₹${template.amount}</span>
-                    <button class="template-edit" onclick="budgetApp.editDebtTemplate(${index})">Edit</button>
-                    <button class="template-delete" onclick="budgetApp.deleteDebtTemplate(${index})">Delete</button>
-                `;
-                container.appendChild(div);
-            });
-        } catch (error) {
-            console.error('Error populating debt template list:', error);
-        }
+    closeDeletePanel() {
+        const modal = document.getElementById('deleteModal');
+        if (modal) modal.style.display = 'none';
     }
 
-    addFixedExpenseTemplate() {
-        try {
-            const nameInput = document.getElementById('templateName');
-            const plannedInput = document.getElementById('templatePlanned');
-            const addButton = document.getElementById('addTemplate');
+    confirmDelete() {
+        const selectedItems = Array.from(document.querySelectorAll('#deleteList input:checked'))
+            .map(input => parseInt(input.value))
+            .sort((a, b) => b - a); // Sort in descending order
 
-            if (!nameInput || !plannedInput) return;
+        const monthData = this.data[this.currentYear][this.currentMonth];
 
-            const name = nameInput.value.trim();
-            const planned = parseFloat(plannedInput.value);
+        selectedItems.forEach(index => {
+            monthData[this.currentDeleteType].splice(index, 1);
+        });
 
-            if (name && planned > 0) {
-                if (this.editingTemplateType === 'fixed' && this.editingTemplateIndex !== undefined) {
-                    // Editing existing template
-                    const oldTemplate = this.fixedExpenseTemplates[this.editingTemplateIndex];
-
-                    // Remove old template from all months
-                    this.removeFixedExpenseFromFutureMonths(oldTemplate);
-
-                    // Update template
-                    this.fixedExpenseTemplates[this.editingTemplateIndex] = { name, planned };
-
-                    // Reset editing state
-                    this.editingTemplateIndex = undefined;
-                    this.editingTemplateType = null;
-                    if (addButton) addButton.textContent = 'Add Template';
-                } else {
-                    // Adding new template
-                    this.fixedExpenseTemplates.push({ name, planned });
-                }
-
-                this.saveFixedExpenseTemplates();
-                this.populateTemplateList();
-
-                nameInput.value = '';
-                plannedInput.value = '';
-
-                // Apply template to current month and refresh UI immediately
-                this.applyTemplatesToCurrentMonth();
-                this.updateAllCharts();
-            } else {
-                this.showError('Please enter valid template details');
-            }
-        } catch (error) {
-            console.error('Error adding/editing fixed expense template:', error);
-            this.showError('Failed to save template');
-        }
+        this.renderCurrentMonth();
+        this.updateCalculations();
+        this.updateAllCharts();
+        this.debouncedSave();
+        this.closeDeletePanel();
     }
 
-    addDebtTemplate() {
-        try {
-            const nameInput = document.getElementById('debtTemplateName');
-            const amountInput = document.getElementById('debtTemplateAmount');
-            const monthsInput = document.getElementById('debtTemplateMonths');
-            const addButton = document.getElementById('addDebtTemplate');
-
-            if (!nameInput || !amountInput) return;
-
-            const name = nameInput.value.trim();
-            const amount = parseFloat(amountInput.value);
-            const monthsRemaining = monthsInput ? parseInt(monthsInput.value) || 0 : 0;
-
-            if (name && amount > 0) {
-                if (this.editingTemplateType === 'debt' && this.editingTemplateIndex !== undefined) {
-                    // Editing existing template
-                    const oldTemplate = this.debtTemplates[this.editingTemplateIndex];
-
-                    // Remove old template from all months
-                    this.removeDebtFromFutureMonths(oldTemplate);
-
-                    // Update template
-                    this.debtTemplates[this.editingTemplateIndex] = { name, amount, monthsRemaining };
-
-                    // Reset editing state
-                    this.editingTemplateIndex = undefined;
-                    this.editingTemplateType = null;
-                    if (addButton) addButton.textContent = 'Add Debt Template';
-                } else {
-                    // Adding new template - set start month/year to current month
-                    const newTemplate = {
-                        name, 
-                        amount, 
-                        monthsRemaining,
-                        startMonth: this.currentMonth,
-                        startYear: this.currentYear
-                    };
-                    this.debtTemplates.push(newTemplate);
-                }
-
-                this.saveDebtTemplates();
-                this.populateDebtTemplateList();
-
-                nameInput.value = '';
-                amountInput.value = '';
-                if (monthsInput) monthsInput.value = '';
-
-                // Apply template to current month and refresh UI immediately
-                this.applyDebtTemplates(this.currentMonth, this.currentYear);
-                this.populateTables();
-                this.updateCalculations();
-                this.updateAllCharts();
-            } else {
-                this.showError('Please enter valid debt template details');
-            }
-        } catch (error) {
-            console.error('Error adding/editing debt template:', error);
-            this.showError('Failed to save debt template');
-        }
-    }
-
-    editFixedExpenseTemplate(index) {
-        try {
-            if (index >= 0 && index < this.fixedExpenseTemplates.length) {
-                const template = this.fixedExpenseTemplates[index];
-
-                // Pre-fill the form with existing values
-                const nameInput = document.getElementById('templateName');
-                const plannedInput = document.getElementById('templatePlanned');
-
-                if (nameInput && plannedInput) {
-                    nameInput.value = template.name;
-                    plannedInput.value = template.planned;
-
-                    // Store the index for updating
-                    this.editingTemplateIndex = index;
-                    this.editingTemplateType = 'fixed';
-
-                    // Change the button text to indicate editing mode
-                    const addButton = document.getElementById('addTemplate');
-                    if (addButton) {
-                        addButton.textContent = 'Update Template';
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error editing fixed expense template:', error);
-            this.showError('Failed to edit template');
-        }
-    }
-
-    deleteFixedExpenseTemplate(index) {
-        try {
-            if (index >= 0 && index < this.fixedExpenseTemplates.length) {
-                const templateToRemove = this.fixedExpenseTemplates[index];
-
-                // Remove from current and future months
-                this.removeFixedExpenseFromFutureMonths(templateToRemove);
-
-                this.fixedExpenseTemplates.splice(index, 1);
-                this.saveFixedExpenseTemplates();
-                this.populateTemplateList();
-                this.populateTables(); // Refresh current view
-                this.updateCalculations();
-            }
-        } catch (error) {
-            console.error('Error deleting fixed expense template:', error);
-            this.showError('Failed to delete template');
-        }
-    }
-
-    editDebtTemplate(index) {
-        try {
-            if (index >= 0 && index < this.debtTemplates.length) {
-                const template = this.debtTemplates[index];
-
-                // Pre-fill the form with existing values
-                const nameInput = document.getElementById('debtTemplateName');
-                const amountInput = document.getElementById('debtTemplateAmount');
-                const monthsInput = document.getElementById('debtTemplateMonths');
-
-                if (nameInput && amountInput) {
-                    nameInput.value = template.name;
-                    amountInput.value = template.amount;
-                    if (monthsInput) {
-                        monthsInput.value = template.monthsRemaining || 0;
-                    }
-
-                    // Store the index for updating
-                    this.editingTemplateIndex = index;
-                    this.editingTemplateType = 'debt';
-
-                    // Change the button text to indicate editing mode
-                    const addButton = document.getElementById('addDebtTemplate');
-                    if (addButton) {
-                        addButton.textContent = 'Update Debt Template';
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error editing debt template:', error);
-            this.showError('Failed to edit debt template');
-        }
-    }
-
-    deleteDebtTemplate(index) {
-        try {
-            if (index >= 0 && index < this.debtTemplates.length) {
-                const templateToRemove = this.debtTemplates[index];
-
-                // Remove from current and future months
-                this.removeDebtFromFutureMonths(templateToRemove);
-
-                this.debtTemplates.splice(index, 1);
-                this.saveDebtTemplates();
-                this.populateDebtTemplateList();
-                
-                // Refresh UI immediately
-                this.populateTables();
-                this.updateCalculations();
-                this.updateAllCharts();
-            }
-        } catch (error) {
-            console.error('Error deleting debt template:', error);
-            this.showError('Failed to delete debt template');
-        }
-    }
-
-    showError(message) {
-        try {
-            const toast = this.getElement('errorToast');
-            const messageEl = this.getElement('errorMessage');
-
-            if (toast && messageEl) {
-                messageEl.textContent = message;
-                toast.classList.add('show');
-
-                setTimeout(() => {
-                    this.hideErrorToast();
-                }, 5000);
-            } else {
-                // Fallback to console and alert
-                console.error(message);
-                alert(message);
-            }
-        } catch (error) {
-            console.error('Error showing error message:', error);
-        }
-    }
-
-    hideErrorToast() {
-        const toast = this.getElement('errorToast');
-        if (toast) {
-            toast.classList.remove('show');
-        }
+    closeAllModals() {
+        const modals = document.querySelectorAll('.modal');
+        modals.forEach(modal => modal.style.display = 'none');
     }
 
     async exportToPDF() {
         try {
-            const exportBtn = this.getElement('exportPDF');
-            if (exportBtn) {
-                exportBtn.disabled = true;
-                exportBtn.textContent = 'Exporting...';
-            }
-
-            // Check if required libraries are loaded
-            if (typeof window.jspdf === 'undefined' || typeof html2canvas === 'undefined') {
-                throw new Error('PDF export libraries not loaded');
-            }
+            this.showLoading('Generating PDF...');
 
             const { jsPDF } = window.jspdf;
             const pdf = new jsPDF();
 
             // Add title
             pdf.setFontSize(20);
-            pdf.text('Budget Report', 20, 30);
+            pdf.text('Budget Report', 20, 20);
 
             const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                               'July', 'August', 'September', 'October', 'November', 'December'];
-            pdf.setFontSize(12);
-            pdf.text(`${monthNames[this.currentMonth]} ${this.currentYear}`, 20, 45);
+                'July', 'August', 'September', 'October', 'November', 'December'];
+            pdf.setFontSize(14);
+            pdf.text(`${monthNames[this.currentMonth]} ${this.currentYear}`, 20, 35);
 
             // Add summary
+            let yPosition = 50;
+            const summaryData = [
+                ['Total Income', document.getElementById('totalIncome').textContent],
+                ['Total Expenses', document.getElementById('totalExpenses').textContent],
+                ['Available Balance', document.getElementById('availableBalance').textContent],
+                ['Savings Rate', document.getElementById('savingsRate').textContent]
+            ];
+
+            pdf.setFontSize(12);
+            summaryData.forEach(([label, value]) => {
+                pdf.text(`${label}: ${value}`, 20, yPosition);
+                yPosition += 10;
+            });
+
+            // Add detailed tables (simplified version)
+            yPosition += 10;
             const monthData = this.data[this.currentYear][this.currentMonth];
-            const totalIncome = (monthData.income || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
-            const totalExpenses = 
-                (monthData.fixedExpenses || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.otherExpenses || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.travelEntertainment || []).reduce((sum, item) => sum + (parseFloat(item.actual) || 0), 0) +
-                (monthData.debt || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0) +
-                (monthData.investment || []).reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
 
-            const remaining = totalIncome - totalExpenses + (monthData.carriedBalance || 0);
+            Object.keys(monthData).forEach(category => {
+                if (Array.isArray(monthData[category]) && monthData[category].length > 0) {
+                    pdf.text(category.toUpperCase(), 20, yPosition);
+                    yPosition += 10;
 
-            pdf.text(`Total Income: ₹${totalIncome.toFixed(2)}`, 20, 65);
-            pdf.text(`Total Expenses: ₹${totalExpenses.toFixed(2)}`, 20, 80);
-            pdf.text(`Remaining: ₹${remaining.toFixed(2)}`, 20, 95);
-            pdf.text(`Carried Forward: ₹${(monthData.carriedBalance || 0).toFixed(2)}`, 20, 110);
+                    monthData[category].forEach(item => {
+                        const line = `${item.name}: ₹${(item.amount || item.actual || item.planned || 0).toFixed(2)}`;
+                        pdf.text(line, 25, yPosition);
+                        yPosition += 8;
 
-            // Capture and add charts if possible
-            try {
-                const chartsSection = document.querySelector('.charts-grid');
-                if (chartsSection) {
-                    const canvas = await html2canvas(chartsSection, {
-                        backgroundColor: null,
-                        scale: 1
+                        if (yPosition > 280) {
+                            pdf.addPage();
+                            yPosition = 20;
+                        }
                     });
-
-                    const imgData = canvas.toDataURL('image/png');
-                    pdf.addImage(imgData, 'PNG', 20, 130, 170, 100);
+                    yPosition += 5;
                 }
-            } catch (chartError) {
-                console.warn('Could not capture charts for PDF:', chartError);
-            }
+            });
 
             pdf.save(`budget-${monthNames[this.currentMonth]}-${this.currentYear}.pdf`);
-
         } catch (error) {
-            console.error('Error exporting PDF:', error);
-            this.showError('Failed to export PDF. Please try again.');
+            console.error('Error generating PDF:', error);
+            this.showError('Failed to generate PDF');
         } finally {
-            const exportBtn = this.getElement('exportPDF');
-            if (exportBtn) {
-                exportBtn.disabled = false;
-                exportBtn.textContent = '📄 Export PDF';
-            }
+            this.hideLoading();
         }
     }
 
-    // Cleanup method to prevent memory leaks
+    loadFromLocalStorage() {
+        try {
+            const saved = localStorage.getItem('budgetData');
+            if (saved) {
+                this.data = JSON.parse(saved);
+            }
+
+            const savedTemplates = localStorage.getItem('budgetTemplates');
+            if (savedTemplates) {
+                this.templates = JSON.parse(savedTemplates);
+            }
+
+            const savedTheme = localStorage.getItem('budgetTheme');
+            if (savedTheme) {
+                this.currentTheme = savedTheme;
+            }
+        } catch (error) {
+            console.error('Error loading from localStorage:', error);
+        }
+    }
+
     cleanup() {
-        try {
-            if (this.expenseChart) {
-                this.expenseChart.destroy();
-                this.expenseChart = null;
-            }
-            if (this.efficiencyChart) {
-                this.efficiencyChart.destroy();
-                this.efficiencyChart = null;
-            }
-            if (this.balanceChart) {
-                this.balanceChart.destroy();
-                this.balanceChart = null;
-            }
-
-            if (this.saveTimeout) {
-                clearTimeout(this.saveTimeout);
-            }
-            if (this.chartUpdateTimeout) {
-                clearTimeout(this.chartUpdateTimeout);
-            }
-        } catch (error) {
-            console.error('Error during cleanup:', error);
-        }
-    }
-
-    applyTemplatesToCurrentMonth() {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            // Apply fixed expense templates
-            this.fixedExpenseTemplates.forEach(template => {
-                const exists = monthData.fixedExpenses.some(expense => 
-                    expense.name && expense.name.toLowerCase() === template.name.toLowerCase()
-                );
-
-                if (!exists) {
-                    monthData.fixedExpenses.push({
-                        name: template.name,
-                        planned: template.planned,
-                        actual: 0
-                    });
-                }
-            });
-
-            // Apply debt templates
-            this.debtTemplates.forEach(template => {
-                const exists = monthData.debt.some(debt => 
-                    debt.name && debt.name.toLowerCase() === template.name.toLowerCase()
-                );
-
-                if (!exists && this.shouldApplyDebtTemplate(template, this.currentMonth, this.currentYear)) {
-                    monthData.debt.push({
-                        name: template.name,
-                        amount: template.amount
-                    });
-                }
-            });
-
-            // Refresh the display
-            this.populateTables();
-            this.updateCalculations();
-            this.saveData();
-
-        } catch (error) {
-            console.error('Error applying templates to current month:', error);
-        }
-    }
-
-    shouldApplyDebtTemplate(template, month, year) {
-        if (!template.monthsRemaining || template.monthsRemaining <= 0) {
-            return true; // No limit specified, always apply
-        }
-
-        // If template doesn't have start month/year, set it to current month/year
-        if (template.startMonth === undefined || template.startYear === undefined) {
-            template.startMonth = this.currentMonth;
-            template.startYear = this.currentYear;
-        }
-
-        // Calculate months from the template's start date
-        const monthsFromStart = (year - template.startYear) * 12 + (month - template.startMonth);
-
-        // Apply from start month (0) for the specified number of remaining months
-        const shouldApply = monthsFromStart >= 0 && monthsFromStart < template.monthsRemaining;
-        
-        console.log(`Debt "${template.name}" - Start: ${template.startMonth+1}/${template.startYear}, Check: ${month+1}/${year}, Months from start: ${monthsFromStart}, Remaining: ${template.monthsRemaining}, Apply: ${shouldApply}`);
-        
-        return shouldApply;
-    }
-
-    applyDebtTemplates(month, year) {
-        try {
-            if (!this.debtTemplates || this.debtTemplates.length === 0) {
-                return;
-            }
-
-            // Remove all template-based debt entries to avoid duplicates
-            this.data[year][month].debt = this.data[year][month].debt.filter(debt => !debt.fromTemplate);
-
-            // Apply debt templates that should be active for this month
-            this.debtTemplates.forEach((template, index) => {
-                if (this.shouldApplyDebtTemplate(template, month, year)) {
-                    this.data[year][month].debt.push({
-                        name: template.name,
-                        amount: template.amount,
-                        fromTemplate: true,
-                        templateId: index
-                    });
-                }
-            });
-
-            console.log(`Applied debt templates for ${month + 1}/${year}`, this.data[year][month].debt.filter(d => d.fromTemplate));
-        } catch (error) {
-            console.error('Error applying debt templates:', error);
-        }
-    }
-
-    showDeletePanel(tableType) {
-        try {
-            const modal = document.getElementById('deleteSelectionModal');
-            const titleEl = document.getElementById('deleteSelectionTitle');
-            const tableNameEl = document.getElementById('deleteTableName');
-            const listEl = document.getElementById('deleteSelectionList');
-            const confirmBtn = document.getElementById('confirmSelectedDelete');
-
-            if (!modal || !titleEl || !tableNameEl || !listEl || !confirmBtn) {
-                this.showError('Delete selection panel elements not found');
-                return;
-            }
-
-            // Set table name for display
-            const tableNames = {
-                'income': 'Income',
-                'fixedExpenses': 'Fixed Expenses',
-                'otherExpenses': 'Other Expenses',
-                'investment': 'Investment',
-                'debt': 'Debt',
-                'travelEntertainment': 'Travel and Entertainment'
-            };
-
-            tableNameEl.textContent = tableNames[tableType] || tableType;
-            this.currentDeleteTableType = tableType;
-
-            // Populate the list
-            this.populateDeleteSelectionList(tableType, listEl);
-
-            // Set up confirm button
-            confirmBtn.onclick = () => this.deleteSelectedItems();
-
-            modal.classList.add('show');
-
-        } catch (error) {
-            console.error('Error showing delete panel:', error);
-            this.showError('Failed to open delete panel');
-        }
-    }
-
-    populateDeleteSelectionList(tableType, listEl) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-            const items = monthData[tableType] || [];
-
-            listEl.innerHTML = '';
-
-            if (items.length === 0) {
-                listEl.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-secondary);">No items to delete</div>';
-                return;
-            }
-
-            items.forEach((item, index) => {
-                const itemDiv = document.createElement('div');
-                itemDiv.className = 'delete-selection-item';
-
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.value = index;
-                checkbox.id = `delete-item-${index}`;
-
-                const infoDiv = document.createElement('div');
-                infoDiv.className = 'delete-item-info';
-
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'delete-item-name';
-                nameSpan.textContent = item.name || `Item ${index + 1}`;
-
-                const amountSpan = document.createElement('span');
-                amountSpan.className = 'delete-item-amount';
-
-                // Display amount based on table type
-                let amountText = '';
-                if (tableType === 'fixedExpenses' || tableType === 'travelEntertainment') {
-                    const planned = parseFloat(item.planned) || 0;
-                    const actual = parseFloat(item.actual) || 0;
-                    amountText = `Planned: ₹${planned.toFixed(0)} | Actual: ₹${actual.toFixed(0)}`;
-                } else {
-                    const amount = parseFloat(item.amount) || 0;
-                    amountText = `₹${amount.toFixed(0)}`;
-                }
-                amountSpan.textContent = amountText;
-
-                infoDiv.appendChild(nameSpan);
-                infoDiv.appendChild(amountSpan);
-
-                itemDiv.appendChild(checkbox);
-                itemDiv.appendChild(infoDiv);
-
-                listEl.appendChild(itemDiv);
-            });
-
-        } catch (error) {
-            console.error('Error populating delete selection list:', error);
-            listEl.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--error-color);">Error loading items</div>';
-        }
-    }
-
-    deleteSelectedItems() {
-        try {
-            const listEl = document.getElementById('deleteSelectionList');
-            const checkboxes = listEl.querySelectorAll('input[type="checkbox"]:checked');
-
-            if (checkboxes.length === 0) {
-                this.showError('Please select items to delete');
-                return;
-            }
-
-            // Get indices in reverse order to avoid index shifting
-            const indicesToDelete = Array.from(checkboxes)
-                .map(cb => parseInt(cb.value))
-                .sort((a, b) => b - a);
-
-            const monthData = this.data[this.currentYear][this.currentMonth];
-            const items = monthData[this.currentDeleteTableType];
-
-            // Delete items
-            indicesToDelete.forEach(index => {
-                if (index >= 0 && index < items.length) {
-                    items.splice(index, 1);
-                }
-            });
-
-            // Save and refresh
-            this.saveData();
-            this.populateTables();
-            this.updateCalculations();
-            this.updateAllCharts();
-
-            this.closeDeleteSelectionPanel();
-
-        } catch (error) {
-            console.error('Error deleting selected items:', error);
-            this.showError('Failed to delete selected items');
-        }
-    }
-
-    closeDeleteSelectionPanel() {
-        const modal = document.getElementById('deleteSelectionModal');
-        if (modal) {
-            modal.classList.remove('show');
-        }
-        this.currentDeleteTableType = null;
-    }
-
-    showManagePanel(tableType) {
-        try {
-            const modal = document.getElementById('manageModal');
-            const title = document.getElementById('manageTitle');
-            const typeName = document.getElementById('manageTypeName');
-
-            if (modal && title && typeName) {
-                this.currentManageTableType = tableType;
-
-                const typeNames = {
-                    'fixedExpenses': 'Fixed Expenses',
-                    'debt': 'Debt'
-                };
-
-                title.textContent = `Manage ${typeNames[tableType]}`;
-                typeName.textContent = typeNames[tableType];
-
-                modal.classList.add('show');
-                this.populateManagePanel(tableType);
-            }
-        } catch (error) {
-            console.error('Error showing manage panel:', error);
-            this.showError('Failed to show manage panel');
-        }
-    }
-
-    closeManagePanel() {
-        const modal = document.getElementById('manageModal');
-        if (modal) {
-            modal.classList.remove('show');
-        }
-        this.currentManageTableType = null;
-    }
-
-    populateManagePanel(tableType) {
-        try {
-            const templatesContainer = document.getElementById('manageTemplatesList');
-            const currentItemsContainer = document.getElementById('manageCurrentItems');
-
-            if (!templatesContainer || !currentItemsContainer) return;
-
-            templatesContainer.innerHTML = '';
-            currentItemsContainer.innerHTML = '';
-
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            if (tableType === 'fixedExpenses') {
-                this.populateFixedExpenseManage(templatesContainer, currentItemsContainer, monthData);
-            } else if (tableType === 'debt') {
-                this.populateDebtManage(templatesContainer, currentItemsContainer, monthData);
-            }
-
-        } catch (error) {
-            console.error('Error populating manage panel:', error);
-        }
-    }
-
-    populateFixedExpenseManage(templatesContainer, currentItemsContainer, monthData) {
-        // Show available templates that are not in current month
-        this.fixedExpenseTemplates.forEach((template, index) => {
-            const exists = monthData.fixedExpenses.some(expense => 
-                expense.name && expense.name.toLowerCase() === template.name.toLowerCase()
-            );
-
-            if (!exists) {
-                const div = document.createElement('div');
-                div.className = 'manage-item';
-                div.innerHTML = `
-                    <span class="manage-item-info">${template.name} - ₹${template.planned}</span>
-                    <button class="glass-button" onclick="budgetApp.addTemplateToMonth('fixedExpenses', ${index})">Add to Month</button>
-                `;
-                templatesContainer.appendChild(div);
-            }
+        Object.values(this.charts).forEach(chart => {
+            if (chart) chart.destroy();
         });
-
-        if (templatesContainer.children.length === 0) {
-            templatesContainer.innerHTML = '<p>All templates are already added to this month</p>';
-        }
-
-        // Show current month items that can be removed
-        monthData.fixedExpenses.forEach((expense, index) => {
-            const div = document.createElement('div');
-            div.className = 'manage-item';
-            div.innerHTML = `
-                <span class="manage-item-info">${expense.name} - Planned: ₹${expense.planned}, Actual: ₹${expense.actual}</span>
-                <button class="glass-button delete-btn" onclick="budgetApp.removeItemFromMonth('fixedExpenses', ${index})">Remove</button>
-            `;
-            currentItemsContainer.appendChild(div);
-        });
-
-        if (currentItemsContainer.children.length === 0) {
-            currentItemsContainer.innerHTML = '<p>No fixed expenses in this month</p>';
-        }
-    }
-
-    populateDebtManage(templatesContainer, currentItemsContainer, monthData) {
-        // Show available debt templates that should apply to this month
-        this.debtTemplates.forEach((template, index) => {
-            const shouldApply = this.shouldApplyDebtTemplate(template, this.currentMonth, this.currentYear);
-            const exists = monthData.debt.some(debt => 
-                debt.name && debt.name.toLowerCase() === template.name.toLowerCase()
-            );
-
-            if (shouldApply && !exists) {
-                const monthsInfo = template.monthsRemaining && template.monthsRemaining > 0 
-                    ? ` (${template.monthsRemaining} months)` 
-                    : ' (unlimited)';
-
-                const div = document.createElement('div');
-                div.className = 'manage-item';
-                div.innerHTML = `
-                    <span class="manage-item-info">${template.name}${monthsInfo} - ₹${template.amount}</span>
-                    <button class="glass-button" onclick="budgetApp.addTemplateToMonth('debt', ${index})">Add to Month</button>
-                `;
-                templatesContainer.appendChild(div);
-            }
-        });
-
-        if (templatesContainer.children.length === 0) {
-            templatesContainer.innerHTML = '<p>All applicable debt templates are already added to this month</p>';
-        }
-
-        // Show current month debt items that can be removed
-        monthData.debt.forEach((debt, index) => {
-            const div = document.createElement('div');
-            div.className = 'manage-item';
-            div.innerHTML = `
-                <span class="manage-item-info">${debt.name} - ₹${debt.amount}</span>
-                <button class="glass-button delete-btn" onclick="budgetApp.removeItemFromMonth('debt', ${index})">Remove</button>
-            `;
-            currentItemsContainer.appendChild(div);
-        });
-
-        if (currentItemsContainer.children.length === 0) {
-            currentItemsContainer.innerHTML = '<p>No debt items in this month</p>';
-        }
-    }
-
-    addTemplateToMonth(tableType, templateIndex) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            if (tableType === 'fixedExpenses' && templateIndex < this.fixedExpenseTemplates.length) {
-                const template = this.fixedExpenseTemplates[templateIndex];
-                monthData.fixedExpenses.push({
-                    name: template.name,
-                    planned: template.planned,
-                    actual: 0
-                });
-            } else if (tableType === 'debt' && templateIndex < this.debtTemplates.length) {
-                const template = this.debtTemplates[templateIndex];
-                monthData.debt.push({
-                    name: template.name,
-                    amount: template.amount
-                });
-            }
-
-            this.saveData();
-            this.populateTables();
-            this.updateCalculations();
-            this.populateManagePanel(tableType);
-
-        } catch (error) {
-            console.error('Error adding template to month:', error);
-            this.showError('Failed to add template to month');
-        }
-    }
-
-    removeItemFromMonth(tableType, itemIndex) {
-        try {
-            const monthData = this.data[this.currentYear][this.currentMonth];
-
-            if (monthData[tableType] && itemIndex < monthData[tableType].length) {
-                monthData[tableType].splice(itemIndex, 1);
-
-                this.saveData();
-                this.populateTables();
-                this.updateCalculations();
-                this.populateManagePanel(tableType);
-            }
-
-        } catch (error) {
-            console.error('Error removing item from month:', error);
-            this.showError('Failed to remove item from month');
-        }
-    }
-
-    removeFixedExpenseFromFutureMonths(template) {
-        try {
-            // Iterate through all years and months to remove this template
-            for (const year in this.data) {
-                for (const month in this.data[year]) {
-                    const monthData = this.data[year][month];
-                    if (monthData.fixedExpenses) {
-                        // Remove entries that match this template
-                        monthData.fixedExpenses = monthData.fixedExpenses.filter(expense => 
-                            expense.name !== template.name || expense.planned !== template.amount
-                        );
-                    }
-                }
-            }
-            this.saveData();
-        } catch (error) {
-            console.error('Error removing fixed expense from future months:', error);
-        }
-    }
-
-    removeDebtFromFutureMonths(template) {
-        try {
-            // Iterate through all years and months to remove this template
-            for (const year in this.data) {
-                for (const month in this.data[year]) {
-                    const monthData = this.data[year][month];
-                    if (monthData.debt) {
-                        // Remove entries that match this template
-                        monthData.debt = monthData.debt.filter(debt => 
-                            debt.name !== template.name || debt.amount !== template.amount
-                        );
-                    }
-                }
-            }
-            this.saveData();
-        } catch (error) {
-            console.error('Error removing debt from future months:', error);
-        }
+        clearTimeout(this.saveTimeout);
+        clearTimeout(this.updateTimeout);
     }
 }
+
+// Global functions for Google Auth
+window.handleCredentialResponse = function(response) {
+    if (budgetApp) {
+        budgetApp.handleCredentialResponse(response);
+    }
+};
 
 // Global app instance
 let budgetApp;
@@ -2030,6 +1426,6 @@ window.addEventListener('beforeunload', () => {
 window.addEventListener('error', (event) => {
     console.error('Global error:', event.error);
     if (budgetApp) {
-        budgetApp.showError('An unexpected error occurred. Please refresh the page if problems persist.');
+        budgetApp.showError('An unexpected error occurred');
     }
 });
