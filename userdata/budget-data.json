@@ -1,0 +1,45 @@
+
+{
+  "2023": {
+    "0": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "1": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "2": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "3": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "4": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "5": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "6": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "7": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "8": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "9": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "10": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "11": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0}
+  },
+  "2024": {
+    "0": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "1": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "2": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "3": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "4": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "5": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "6": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "7": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "8": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "9": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "10": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "11": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0}
+  },
+  "2025": {
+    "0": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "1": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "2": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "3": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "4": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "5": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "6": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "7": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "8": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "9": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "10": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0},
+    "11": {"income": [], "fixedExpenses": [], "otherExpenses": [], "debt": [], "investment": [], "travelEntertainment": [], "carriedBalance": 0}
+  }
+}

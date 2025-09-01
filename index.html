@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Budget Planning App</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <h1 class="app-title">Budget Planner</h1>
+                <div class="header-controls">
+                    <div class="month-navigator">
+                        <button id="prevMonth" class="nav-arrow glass-button" title="Previous Month">
+                            ‹
+                        </button>
+                        <div class="current-month" id="currentMonth">
+                            <!-- Dynamic month/year display -->
+                        </div>
+                        <button id="nextMonth" class="nav-arrow glass-button" title="Next Month">
+                            ›
+                        </button>
+                    </div>
+                    <button id="themeToggle" class="glass-button theme-toggle" title="Toggle Theme">
+                        🌙
+                    </button>
+                    <button id="adminPanel" class="glass-button admin-btn" title="Admin Panel">
+                        ⚙️ Admin
+                    </button>
+                    <button id="exportPDF" class="glass-button export-btn" title="Export to PDF">
+                        📄 Export PDF
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content" id="mainContent">
+            <!-- Dashboard Section -->
+            <section class="dashboard-section">
+                <!-- Summary Cards -->
+                <div class="summary-cards">
+                    <div class="summary-card glass-card">
+                        <h3>Total Income</h3>
+                        <div class="amount" id="totalIncome">₹0.00</div>
+                    </div>
+                    <div class="summary-card glass-card">
+                        <h3>Total Expenses</h3>
+                        <div class="amount" id="totalExpenses">₹0.00</div>
+                    </div>
+                    <div class="summary-card glass-card">
+                        <h3>Remaining</h3>
+                        <div class="amount" id="remainingAmount">₹0.00</div>
+                    </div>
+                    <div class="summary-card glass-card carry-forward">
+                        <h3>Carried Forward</h3>
+                        <div class="amount" id="carriedAmount">₹0.00</div>
+                    </div>
+                </div>
+
+                <!-- Charts Section -->
+                <div class="charts-grid">
+                    <div class="chart-container glass-card">
+                        <h3>Expense Split</h3>
+                        <canvas id="expenseChart" width="300" height="300"></canvas>
+                    </div>
+                    <div class="chart-container glass-card">
+                        <h3>6-Month Efficiency Trend</h3>
+                        <canvas id="efficiencyChart" width="300" height="300"></canvas>
+                    </div>
+                    <div class="chart-container glass-card">
+                        <h3>Available vs Used</h3>
+                        <canvas id="balanceChart" width="300" height="300"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Income Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Income</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('income')" title="Add Income">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('income')" title="Delete Income Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="incomeTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for income items">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Source of income (salary, freelance, etc.)">Income Source</th>
+                                <th class="tooltip-header" data-tooltip="Amount received from this income source">Amount (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Fixed Expenses Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Fixed Expenses</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('fixedExpenses')" title="Add Fixed Expense">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showManagePanel('fixedExpenses')" title="Manage Fixed Expenses">
+                            <svg class="manage-icon" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="m12,1l2.09,6.26l6.91.74-5,4.99,1.18,6.91-6.18-3.24-6.18,3.24,1.18-6.91-5-4.99,6.91-.74z"></path>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('fixedExpenses')" title="Delete Fixed Expense Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="fixedExpensesTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for fixed expenses">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Name of the fixed expense (rent, utilities, etc.)">Fixed Expense</th>
+                                <th class="tooltip-header" data-tooltip="Amount you planned to spend">Planned (₹)</th>
+                                <th class="tooltip-header" data-tooltip="Amount you actually spent">Actual (₹)</th>
+                                <th class="tooltip-header" data-tooltip="Difference between planned and actual (Planned - Actual)">Balance (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Other Expenses Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Other Expenses</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('otherExpenses')" title="Add Other Expense">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('otherExpenses')" title="Delete Other Expense Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="otherExpensesTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for other expenses">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Name of the variable expense (shopping, etc.)">Other Expense</th>
+                                <th class="tooltip-header" data-tooltip="Amount you actually spent">Amount (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Investment Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Investment</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('investment')" title="Add Investment">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('investment')" title="Delete Investment Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="investmentTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for investment items">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Type of investment (stocks, bonds, savings, etc.)">Investment</th>
+                                <th class="tooltip-header" data-tooltip="Amount invested">Amount (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Debt Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Debt</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('debt')" title="Add Debt">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showManagePanel('debt')" title="Manage Debt">
+                            <svg class="manage-icon" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="m12,1l2.09,6.26l6.91.74-5,4.99,1.18,6.91-6.18-3.24-6.18,3.24,1.18-6.91-5-4.99,6.91-.74z"></path>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('debt')" title="Delete Debt Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="debtTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for debt items">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Name or type of debt (credit card, loan, etc.)">Debt</th>
+                                <th class="tooltip-header" data-tooltip="Amount owed or payment made">Amount (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Travel and Entertainment Table -->
+            <section class="table-section">
+                <div class="section-header">
+                    <h2 class="section-title">Travel and Entertainment</h2>
+                    <div class="table-actions">
+                        <button class="icon-button" onclick="budgetApp.addRow('travelEntertainment')" title="Add Travel/Entertainment">
+                            <svg class="add-icon" viewBox="0 0 24 24">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="icon-button" onclick="budgetApp.showDeletePanel('travelEntertainment')" title="Delete Travel/Entertainment Items">
+                            <svg class="delete-icon" viewBox="0 0 24 24">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1-2,2H7a2,2 0 0,1-2-2V6m3,0V4a2,2 0 0,1,2-2h4a2,2 0 0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container glass-card">
+                    <table id="travelEntertainmentTable" class="budget-table">
+                        <thead>
+                            <tr>
+                                <th class="tooltip-header" data-tooltip="Sequential number for travel and entertainment expenses">S.No</th>
+                                <th class="tooltip-header" data-tooltip="Name of the travel or entertainment expense">Travel/Entertainment</th>
+                                <th class="tooltip-header" data-tooltip="Amount you planned to spend">Planned (₹)</th>
+                                <th class="tooltip-header" data-tooltip="Amount you actually spent">Actual (₹)</th>
+                                <th class="tooltip-header" data-tooltip="Difference between planned and actual (Planned - Actual)">Balance (₹)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Dynamic rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Admin Panel Modal -->
+        <div id="adminModal" class="modal-overlay">
+            <div class="modal-content glass-card">
+                <div class="modal-header">
+                    <h2>Admin Panel - Expense Templates</h2>
+                    <button class="close-modal glass-button" onclick="budgetApp.closeAdminPanel()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="admin-info">
+                        <p>Manage expense templates that will be applied to future months only.</p>
+                        <p><strong>Note:</strong> Changes will only affect current month and beyond.</p>
+                    </div>
+
+                    <!-- Fixed Expense Templates -->
+                    <div class="template-section">
+                        <h3>Fixed Expense Templates</h3>
+                        <div class="template-form">
+                            <input type="text" id="templateName" class="glass-input" placeholder="Expense name (e.g., Rent)" />
+                            <input type="number" id="templatePlanned" class="glass-input numeric-input" placeholder="Planned amount" />
+                            <button id="addTemplate" class="glass-button">Add Template</button>
+                        </div>
+                        <div class="template-list" id="templateList">
+                            <!-- Dynamic template list -->
+                        </div>
+                    </div>
+
+                    <!-- Debt Templates -->
+                    <div class="template-section">
+                        <h3>Debt Templates</h3>
+                        <div class="template-form">
+                            <input type="text" id="debtTemplateName" class="glass-input" placeholder="Debt name (e.g., Credit Card)" />
+                            <input type="number" id="debtTemplateAmount" class="glass-input numeric-input" placeholder="Monthly payment" />
+                            <input type="number" id="debtTemplateMonths" class="glass-input numeric-input" placeholder="Months remaining (0 = unlimited)" />
+                            <button id="addDebtTemplate" class="glass-button">Add Debt Template</button>
+                        </div>
+                        <div class="template-list" id="debtTemplateList">
+                            <!-- Dynamic debt template list -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete Selection Panel -->
+        <div id="deleteSelectionModal" class="modal-overlay">
+            <div class="modal-content glass-card">
+                <div class="modal-header">
+                    <h2 id="deleteSelectionTitle">Select Items to Delete</h2>
+                    <button class="close-modal glass-button" onclick="budgetApp.closeDeleteSelectionPanel()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="delete-selection-info">
+                        <p>Select the items you want to delete from <span id="deleteTableName"></span>:</p>
+                    </div>
+                    <div class="delete-selection-list" id="deleteSelectionList">
+                        <!-- Dynamic list will be populated here -->
+                    </div>
+                    <div class="modal-actions">
+                        <button id="confirmSelectedDelete" class="glass-button delete-btn">Delete Selected</button>
+                        <button onclick="budgetApp.closeDeleteSelectionPanel()" class="glass-button">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Manage Panel -->
+        <div id="manageModal" class="modal-overlay">
+            <div class="modal-content glass-card">
+                <div class="modal-header">
+                    <h2 id="manageTitle">Manage Items</h2>
+                    <button class="close-modal glass-button" onclick="budgetApp.closeManagePanel()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="manage-info">
+                        <p>Manage <span id="manageTypeName"></span> templates for this month. You can add missing items or remove specific ones.</p>
+                    </div>
+
+                    <div class="manage-section">
+                        <h3>Available Templates</h3>
+                        <div class="manage-templates" id="manageTemplatesList">
+                            <!-- Available templates will be shown here -->
+                        </div>
+                    </div>
+
+                    <div class="manage-section">
+                        <h3>Current Month Items</h3>
+                        <div class="manage-current-items" id="manageCurrentItems">
+                            <!-- Current month items will be shown here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tooltip -->
+        <div id="tooltip" class="tooltip"></div>
+
+        <!-- Error Toast -->
+        <div id="errorToast" class="error-toast">
+            <span id="errorMessage"></span>
+            <button onclick="budgetApp.hideErrorToast()" class="close-toast">×</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
